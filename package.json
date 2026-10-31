@@ -41,5 +41,10 @@
     "push": "vite build",
     "deploy": "vite build",
     "typecheck": "tsc --noEmit"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
   }
 }
