@@ -19,6 +19,8 @@ export interface PrivateConfig {
     defaultReply: string;
     /** QQ 号白名单，空 = 对所有人生效 */
     whitelist: (number | string)[];
+    /** WebUI 编辑用的多行文本形式(每行一个 QQ 号,# 注释,不参与匹配) */
+    whitelistText?: string;
 }
 
 /** 群聊配置 */
@@ -26,6 +28,8 @@ export interface GroupConfig {
     enabled: boolean;
     /** 群号白名单，空 = 对所有群生效 */
     whitelist: (number | string)[];
+    /** WebUI 编辑用的多行文本形式(每行一个群号,# 注释,不参与匹配) */
+    whitelistText?: string;
 }
 
 export interface PluginConfig {
@@ -36,8 +40,20 @@ export interface PluginConfig {
     group: GroupConfig;
     /** 不可回复的 QQ 号（如自己） */
     blacklist: (number | string)[];
+    /** 同一用户命中同一规则后的冷却秒数,0 = 关闭 */
+    cooldownSeconds: number;
+    /** 回复前随机延迟下限(毫秒),拟人防风控 */
+    replyDelayMinMs: number;
+    /** 回复前随机延迟上限(毫秒) */
+    replyDelayMaxMs: number;
+    /** 群聊是否仅被 @ 时才回复 */
+    atOnly: boolean;
+    /** 各群独立启用配置(群管理页使用) */
+    groupConfigs: Record<string, GroupConfig>;
     /** WebUI 编辑用的多行文本形式(不参与消息匹配) */
     keywordsText?: string;
+    /** 黑名单的多行文本形式(每行一个 QQ 号,# 注释) */
+    blacklistText?: string;
 }
 
 export interface ApiResponse<T = unknown> {

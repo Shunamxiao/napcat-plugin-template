@@ -75,19 +75,32 @@ export default function ConfigPage() {
                         onChange={(v) => updateField('debug', v)}
                     />
                     <InputRow
-                        label="命令前缀"
-                        desc="触发命令的前缀"
-                        value={config.commandPrefix}
-                        onChange={(v) => updateField('commandPrefix', v)}
-                    />
-                    <InputRow
-                        label="冷却时间 (秒)"
-                        desc="同一命令请求冷却时间，0 表示不限制"
+                        label="回复冷却 (秒)"
+                        desc="同一用户命中同一规则后的冷却秒数，0 表示关闭"
                         value={String(config.cooldownSeconds)}
                         type="number"
                         onChange={(v) => updateField('cooldownSeconds', Number(v) || 0)}
                     />
-                    {/* TODO: 在这里添加你的配置项 */}
+                    <InputRow
+                        label="回复延迟下限 (毫秒)"
+                        desc="回复前随机延迟下限，拟人化防风控"
+                        value={String(config.replyDelayMinMs)}
+                        type="number"
+                        onChange={(v) => updateField('replyDelayMinMs', Number(v) || 0)}
+                    />
+                    <InputRow
+                        label="回复延迟上限 (毫秒)"
+                        desc="回复前随机延迟上限，需大于等于下限"
+                        value={String(config.replyDelayMaxMs)}
+                        type="number"
+                        onChange={(v) => updateField('replyDelayMaxMs', Number(v) || 0)}
+                    />
+                    <ToggleRow
+                        label="群聊仅被 @ 时回复"
+                        desc="开启后群聊只有 @ 机器人的消息才触发自动回复"
+                        checked={config.atOnly}
+                        onChange={(v) => updateField('atOnly', v)}
+                    />
                 </div>
             </div>
 

@@ -14,7 +14,7 @@ import fs from 'fs';
 import path from 'path';
 import type { NapCatPluginContext, PluginLogger } from 'napcat-types/napcat-onebot/network/plugin/types';
 import { DEFAULT_CONFIG } from '../config';
-import type { PluginConfig, GroupConfig } from '../types';
+import type { KeywordRule, PluginConfig, GroupConfig } from '../types';
 
 // ==================== 配置清洗工具 ====================
 
@@ -27,28 +27,56 @@ function isObject(v: unknown): v is Record<string, unknown> {
  * 确保从文件读取的配置符合预期类型，防止运行时错误
  */
 function sanitizeConfig(raw: unknown): PluginConfig {
-    if (!isObject(raw)) return { ...DEFAULT_CONFIG, groupConfigs: {} };
+    // 深拷贝默认值,避免嵌套对象共享引用被运行时修改污染
+    const out: PluginConfig = JSON.parse(JSON.stringify(DEFAULT_CONFIG));
 
-    const out: PluginConfig = { ...DEFAULT_CONFIG, groupConfigs: {} };
+    if (!isObject(raw)) return out;
 
     if (typeof raw.enabled === 'boolean') out.enabled = raw.enabled;
     if (typeof raw.debug === 'boolean') out.debug = raw.debug;
-    if (typeof raw.commandPrefix === 'string') out.commandPrefix = raw.commandPrefix;
-    if (typeof raw.cooldownSeconds === 'number') out.cooldownSeconds = raw.cooldownSeconds;
+    if (typeof raw.cooldownSeconds === 'number' && raw.cooldownSeconds >= 0) out.cooldownSeconds = raw.cooldownSeconds;
+    if (typeof raw.replyDelayMinMs === 'number' && raw.replyDelayMinMs >= 0) out.replyDelayMinMs = raw.replyDelayMinMs;
+    if (typeof raw.replyDelayMaxMs === 'number' && raw.replyDelayMaxMs >= 0) out.replyDelayMaxMs = raw.replyDelayMaxMs;
+    if (typeof raw.atOnly === 'boolean') out.atOnly = raw.atOnly;
+    if (typeof raw.keywordsText === 'string') out.keywordsText = raw.keywordsText;
+    if (typeof raw.blacklistText === 'string') out.blacklistText = raw.blacklistText;
 
-    // 群配置清洗
+    // 关键词规则清洗:结构与内容合法才保留,防止坏数据进入运行时
+    if (Array.isArray(raw.keywords)) {
+        const keywords = raw.keywords
+            .filter(isObject)
+            .map((k): KeywordRule | null => {
+                if (typeof k.match !== 'string' || typeof k.reply !== 'string') return null;
+                if (!k.match.trim() || !k.reply.trim()) return null;
+                return { match: k.match, matchType: k.matchType === 'prefix' ? 'prefix' : 'contains', reply: k.reply };
+            })
+            .filter((k): k is KeywordRule => k !== null);
+        if (keywords.length > 0) out.keywords = keywords;
+    }
+
+    if (isObject(raw.private)) {
+        if (typeof raw.private.enabled === 'boolean') out.private.enabled = raw.private.enabled;
+        if (typeof raw.private.defaultReply === 'string') out.private.defaultReply = raw.private.defaultReply;
+        if (Array.isArray(raw.private.whitelist)) out.private.whitelist = raw.private.whitelist.map(String);
+        if (typeof raw.private.whitelistText === 'string') out.private.whitelistText = raw.private.whitelistText;
+    }
+
+    if (isObject(raw.group)) {
+        if (typeof raw.group.enabled === 'boolean') out.group.enabled = raw.group.enabled;
+        if (Array.isArray(raw.group.whitelist)) out.group.whitelist = raw.group.whitelist.map(String);
+        if (typeof raw.group.whitelistText === 'string') out.group.whitelistText = raw.group.whitelistText;
+    }
+
+    if (Array.isArray(raw.blacklist)) out.blacklist = raw.blacklist.map(String);
+
+    // 各群独立启用配置
     if (isObject(raw.groupConfigs)) {
         for (const [groupId, groupConfig] of Object.entries(raw.groupConfigs)) {
-            if (isObject(groupConfig)) {
-                const cfg: GroupConfig = {};
-                if (typeof groupConfig.enabled === 'boolean') cfg.enabled = groupConfig.enabled;
-                // TODO: 在这里添加你的群配置项清洗
-                out.groupConfigs[groupId] = cfg;
+            if (isObject(groupConfig) && typeof groupConfig.enabled === 'boolean') {
+                out.groupConfigs[groupId] = { enabled: groupConfig.enabled };
             }
         }
     }
-
-    // TODO: 在这里添加你的配置项清洗逻辑
 
     return out;
 }
@@ -70,6 +98,12 @@ class PluginState {
 
     /** 活跃的定时器 Map: jobId -> NodeJS.Timeout */
     timers: Map<string, ReturnType<typeof setInterval>> = new Map();
+
+    /** 回复冷却记录: key = 发送者QQ+规则, value = 上次命中时间戳 */
+    replyCooldowns: Map<string, number> = new Map();
+
+    /** 待发送的延迟回复定时器(卸载时取消,避免插件卸载后仍发出回复) */
+    pendingReplies: Set<ReturnType<typeof setTimeout>> = new Set();
 
     /** 运行时统计 */
     stats = {
@@ -99,7 +133,7 @@ class PluginState {
         this.startTime = Date.now();
         this.loadConfig();
         this.ensureDataDir();
-        this.fetchSelfId();
+        void this.fetchSelfId();
     }
 
     /**
@@ -129,6 +163,10 @@ class PluginState {
             this.logger.debug(`(｡-ω-) 清理定时器: ${jobId}`);
         }
         this.timers.clear();
+        // 取消尚未发送的延迟回复,并清空冷却记录
+        for (const timer of this.pendingReplies) clearTimeout(timer);
+        this.pendingReplies.clear();
+        this.replyCooldowns.clear();
         this.saveConfig();
         this._ctx = null;
     }
@@ -199,13 +237,13 @@ class PluginState {
                 }
                 this.ctx.logger.debug('已加载本地配置');
             } else {
-                this.config = { ...DEFAULT_CONFIG, groupConfigs: {} };
+                this.config = sanitizeConfig(undefined);
                 this.saveConfig();
                 this.ctx.logger.debug('配置文件不存在，已创建默认配置');
             }
         } catch (error) {
             this.ctx.logger.error('加载配置失败，使用默认配置:', error);
-            this.config = { ...DEFAULT_CONFIG, groupConfigs: {} };
+            this.config = sanitizeConfig(undefined);
         }
     }
 

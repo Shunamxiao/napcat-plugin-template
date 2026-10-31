@@ -27,7 +27,7 @@ import type {
 } from 'napcat-types/napcat-onebot/network/plugin/types';
 import { EventType } from 'napcat-types/napcat-onebot/event/index';
 
-import { buildConfigSchema, keywordsToText, textToKeywords } from './config';
+import { DEFAULT_CONFIG, buildConfigSchema, idListToText, keywordsToText, textToIdList, textToKeywords } from './config';
 import { pluginState } from './core/state';
 import { handleMessage } from './handlers/message-handler';
 import { registerApiRoutes } from './services/api-service';
@@ -108,7 +108,14 @@ export const plugin_cleanup: PluginModule['plugin_cleanup'] = async (ctx) => {
 
 /** 获取当前配置 */
 export const plugin_get_config: PluginModule['plugin_get_config'] = async (ctx) => {
-    return { ...pluginState.config, keywordsText: keywordsToText(pluginState.config.keywords) };
+    const cfg = pluginState.config;
+    return {
+        ...cfg,
+        keywordsText: keywordsToText(cfg.keywords),
+        private: { ...cfg.private, whitelistText: idListToText(cfg.private.whitelist) },
+        group: { ...cfg.group, whitelistText: idListToText(cfg.group.whitelist) },
+        blacklistText: idListToText(cfg.blacklist),
+    };
 };
 
 /** 设置配置（完整替换，由 NapCat WebUI 调用） */
@@ -123,6 +130,19 @@ export const plugin_set_config: PluginModule['plugin_set_config'] = async (ctx, 
         // 文本缺失(如外部 API 直接改 keywords) → 从规则反推文本
         cfg.keywordsText = keywordsToText(cfg.keywords);
     }
+    // 白名单/黑名单:文本存在则解析回数组,否则从数组反推文本(与 keywordsText 同一双向同步模式)
+    const syncList = (list, text) => {
+        if (typeof text === 'string' && text.trim()) return { list: textToIdList(text), text };
+        return { list, text: idListToText(list) };
+    };
+    const p = syncList(cfg.private?.whitelist ?? [], cfg.private?.whitelistText);
+    const g = syncList(cfg.group?.whitelist ?? [], cfg.group?.whitelistText);
+    const b = syncList(cfg.blacklist ?? [], cfg.blacklistText);
+    cfg.private = { ...(cfg.private ?? DEFAULT_CONFIG.private), whitelist: p.list, whitelistText: p.text };
+    cfg.group = { ...(cfg.group ?? DEFAULT_CONFIG.group), whitelist: g.list, whitelistText: g.text };
+    cfg.blacklist = b.list;
+    cfg.blacklistText = b.text;
+
     pluginState.replaceConfig(cfg);
     ctx.logger.info('配置已通过 WebUI 更新, 当前规则数:', cfg.keywords.length);
 };

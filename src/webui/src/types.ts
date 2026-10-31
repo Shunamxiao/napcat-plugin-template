@@ -12,17 +12,39 @@ export interface PluginStatus {
     }
 }
 
-export interface PluginConfig {
+export interface KeywordRule {
+    match: string
+    matchType?: 'contains' | 'prefix'
+    reply: string
+}
+
+export interface PrivateConfig {
     enabled: boolean
-    debug: boolean
-    commandPrefix: string
-    cooldownSeconds: number
-    groupConfigs?: Record<string, GroupConfig>
-    // TODO: 在这里添加你的插件配置项类型
+    defaultReply: string
+    whitelist: (number | string)[]
+    whitelistText?: string
 }
 
 export interface GroupConfig {
-    enabled?: boolean
+    enabled: boolean
+    whitelist: (number | string)[]
+    whitelistText?: string
+}
+
+export interface PluginConfig {
+    enabled: boolean
+    debug: boolean
+    keywords: KeywordRule[]
+    private: PrivateConfig
+    group: GroupConfig
+    blacklist: (number | string)[]
+    keywordsText?: string
+    blacklistText?: string
+    cooldownSeconds: number
+    replyDelayMinMs: number
+    replyDelayMaxMs: number
+    atOnly: boolean
+    groupConfigs?: Record<string, GroupConfig>
 }
 
 export interface GroupInfo {

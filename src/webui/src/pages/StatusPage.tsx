@@ -116,8 +116,14 @@ export default function StatusPage({ status, onRefresh }: StatusPageProps) {
                     </button>
                 </div>
                 <div className="space-y-3">
-                    <InfoRow label="命令前缀" value={config.commandPrefix} />
-                    <InfoRow label="冷却时间" value={`${config.cooldownSeconds} 秒`} />
+                    <InfoRow label="自动回复开关" value={config.enabled ? '开启' : '关闭'} />
+                    <InfoRow label="关键词规则数" value={String(config.keywords?.length ?? 0)} />
+                    <InfoRow label="回复冷却" value={`${config.cooldownSeconds ?? 0} 秒`} />
+                    <InfoRow label="回复延迟" value={`${config.replyDelayMinMs ?? 0} ~ ${config.replyDelayMaxMs ?? 0} 毫秒`} />
+                    <InfoRow label="群聊仅@回复" value={config.atOnly ? '开启' : '关闭'} />
+                    <InfoRow label="私聊回复" value={config.private?.enabled ? '开启' : '关闭'} />
+                    <InfoRow label="群聊回复" value={config.group?.enabled ? '开启' : '关闭'} />
+                    <InfoRow label="黑名单" value={`${config.blacklist?.length ?? 0} 人`} />
                     <InfoRow label="调试模式" value={config.debug ? '开启' : '关闭'} />
                 </div>
             </div>
