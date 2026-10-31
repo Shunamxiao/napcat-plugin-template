@@ -27,7 +27,7 @@ import type {
 } from 'napcat-types/napcat-onebot/network/plugin/types';
 import { EventType } from 'napcat-types/napcat-onebot/event/index';
 
-import { buildConfigSchema } from './config';
+import { buildConfigSchema, keywordsToText, textToKeywords } from './config';
 import { pluginState } from './core/state';
 import { handleMessage } from './handlers/message-handler';
 import { registerApiRoutes } from './services/api-service';
@@ -108,13 +108,23 @@ export const plugin_cleanup: PluginModule['plugin_cleanup'] = async (ctx) => {
 
 /** 获取当前配置 */
 export const plugin_get_config: PluginModule['plugin_get_config'] = async (ctx) => {
-    return pluginState.config;
+    return { ...pluginState.config, keywordsText: keywordsToText(pluginState.config.keywords) };
 };
 
 /** 设置配置（完整替换，由 NapCat WebUI 调用） */
 export const plugin_set_config: PluginModule['plugin_set_config'] = async (ctx, config) => {
-    pluginState.replaceConfig(config as PluginConfig);
-    ctx.logger.info('配置已通过 WebUI 更新');
+    const cfg = { ...(config as PluginConfig) };
+    if (typeof cfg.keywordsText === 'string' && cfg.keywordsText.trim()) {
+        // WebUI 提交了编辑后的规则文本 → 解析回结构化数组
+        const parsed = textToKeywords(cfg.keywordsText);
+        if (parsed.length > 0) cfg.keywords = parsed;
+        else cfg.keywordsText = keywordsToText(cfg.keywords);
+    } else {
+        // 文本缺失(如外部 API 直接改 keywords) → 从规则反推文本
+        cfg.keywordsText = keywordsToText(cfg.keywords);
+    }
+    pluginState.replaceConfig(cfg);
+    ctx.logger.info('配置已通过 WebUI 更新, 当前规则数:', cfg.keywords.length);
 };
 
 /**

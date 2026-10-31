@@ -36,6 +36,8 @@ export interface PluginConfig {
     group: GroupConfig;
     /** 不可回复的 QQ 号（如自己） */
     blacklist: (number | string)[];
+    /** WebUI 编辑用的多行文本形式(不参与消息匹配) */
+    keywordsText?: string;
 }
 
 export interface ApiResponse<T = unknown> {
