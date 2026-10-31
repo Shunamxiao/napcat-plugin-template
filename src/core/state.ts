@@ -13,13 +13,38 @@
 import fs from 'fs';
 import path from 'path';
 import type { NapCatPluginContext, PluginLogger } from 'napcat-types/napcat-onebot/network/plugin/types';
-import { DEFAULT_CONFIG } from '../config';
-import type { KeywordRule, PluginConfig, GroupConfig } from '../types';
+import { DEFAULT_CONFIG, groupRulesToText, textToGroupRules } from '../config';
+import type { KeywordRule, PluginConfig, GroupConfig, GroupRule } from '../types';
 
 // ==================== 配置清洗工具 ====================
 
 function isObject(v: unknown): v is Record<string, unknown> {
     return v !== null && typeof v === 'object' && !Array.isArray(v);
+}
+
+/** 清洗单条关键词规则,结构或内容非法时返回 null */
+function sanitizeKeywordRule(raw: unknown): KeywordRule | null {
+    if (!isObject(raw)) return null;
+    if (typeof raw.match !== 'string' || typeof raw.reply !== 'string') return null;
+    if (!raw.match.trim() || !raw.reply.trim()) return null;
+    return { match: raw.match, matchType: raw.matchType === 'prefix' ? 'prefix' : 'contains', reply: raw.reply };
+}
+
+/** 清洗群级规则表:键为群号,逐字段校验,非法条目直接丢弃 */
+function sanitizeGroupRules(raw: Record<string, unknown>): Record<string, GroupRule> {
+    const out: Record<string, GroupRule> = {};
+    for (const [groupId, rule] of Object.entries(raw)) {
+        if (!groupId.trim() || !isObject(rule)) continue;
+        const item: GroupRule = {};
+        if (typeof rule.enabled === 'boolean') item.enabled = rule.enabled;
+        if (typeof rule.atOnly === 'boolean') item.atOnly = rule.atOnly;
+        if (Array.isArray(rule.keywords)) {
+            const keywords = rule.keywords.map(sanitizeKeywordRule).filter((k): k is KeywordRule => k !== null);
+            if (keywords.length > 0) item.keywords = keywords;
+        }
+        out[groupId] = item;
+    }
+    return out;
 }
 
 /**
@@ -44,15 +69,17 @@ export function sanitizeConfig(raw: unknown): PluginConfig {
     // 关键词规则清洗:结构与内容合法才保留,防止坏数据进入运行时
     if (Array.isArray(raw.keywords)) {
         const keywords = raw.keywords
-            .filter(isObject)
-            .map((k): KeywordRule | null => {
-                if (typeof k.match !== 'string' || typeof k.reply !== 'string') return null;
-                if (!k.match.trim() || !k.reply.trim()) return null;
-                return { match: k.match, matchType: k.matchType === 'prefix' ? 'prefix' : 'contains', reply: k.reply };
-            })
+            .map(sanitizeKeywordRule)
             .filter((k): k is KeywordRule => k !== null);
         if (keywords.length > 0) out.keywords = keywords;
     }
+
+    // 群级规则清洗:坏条目丢弃,防止非法数据进入运行时
+    if (isObject(raw.groupRules)) {
+        out.groupRules = sanitizeGroupRules(raw.groupRules);
+    }
+    // 文本字段始终由结构化规则推导,保证读取与持久化内容一致
+    out.groupRulesText = groupRulesToText(out.groupRules);
 
     if (isObject(raw.private)) {
         if (typeof raw.private.enabled === 'boolean') out.private.enabled = raw.private.enabled;
@@ -273,6 +300,11 @@ class PluginState {
         const merged = { ...this.config, ...partial };
         if (partial.private) merged.private = { ...this.config.private, ...partial.private };
         if (partial.group) merged.group = { ...this.config.group, ...partial.group };
+        // 群级规则文本:合法 JSON 才覆盖结构化规则,非法文本忽略
+        if (typeof partial.groupRulesText === 'string') {
+            const parsed = textToGroupRules(partial.groupRulesText);
+            if (parsed) merged.groupRules = parsed;
+        }
         this.config = sanitizeConfig(merged);
         this.saveConfig();
     }

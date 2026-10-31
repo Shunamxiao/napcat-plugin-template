@@ -49,12 +49,18 @@ export async function handleMessage(ctx: NapCatPluginContext, event: OB11Message
     // 群聊
     if (kind === 'group') {
         if (!config.group.enabled) return;
-        if (!checkWhitelist(config.group.whitelist, String(event.group_id ?? ''))) return;
-        // atOnly:开启后仅 @ 机器人的群消息触发回复
-        if (config.atOnly && !isAtSelf(event, selfId)) return;
-        const hit = matchKeywords(config.keywords, text);
+        const groupId = String(event.group_id ?? '');
+        if (!checkWhitelist(config.group.whitelist, groupId)) return;
+        // 群级规则优先:enabled=false 整群跳过,未设置的字段沿用全局
+        const groupRule = config.groupRules?.[groupId];
+        if (groupRule?.enabled === false) return;
+        const atOnly = groupRule?.atOnly ?? config.atOnly;
+        if (atOnly && !isAtSelf(event, selfId)) return;
+        // 群专属关键词非空时只按群规则匹配,避免全局规则串群
+        const keywords = groupRule?.keywords?.length ? groupRule.keywords : config.keywords;
+        const hit = matchKeywords(keywords, text);
         if (hit && !isOnCooldown(senderId, hit.match)) {
-            scheduleReply(ctx, event, hit.reply, '[群聊] ' + event.group_id);
+            scheduleReply(ctx, event, hit.reply, '[群聊] ' + groupId);
         }
     }
 }

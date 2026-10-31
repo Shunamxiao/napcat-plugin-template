@@ -27,7 +27,7 @@ import type {
 } from 'napcat-types/napcat-onebot/network/plugin/types';
 import { EventType } from 'napcat-types/napcat-onebot/event/index';
 
-import { DEFAULT_CONFIG, buildConfigSchema, idListToText, keywordsToText, textToIdList, textToKeywords } from './config';
+import { DEFAULT_CONFIG, buildConfigSchema, groupRulesToText, idListToText, keywordsToText, textToGroupRules, textToIdList, textToKeywords } from './config';
 import { pluginState } from './core/state';
 import { handleMessage } from './handlers/message-handler';
 import { registerApiRoutes } from './services/api-service';
@@ -112,6 +112,7 @@ export const plugin_get_config: PluginModule['plugin_get_config'] = async (ctx) 
     return {
         ...cfg,
         keywordsText: keywordsToText(cfg.keywords),
+        groupRulesText: groupRulesToText(cfg.groupRules),
         private: { ...cfg.private, whitelistText: idListToText(cfg.private.whitelist) },
         group: { ...cfg.group, whitelistText: idListToText(cfg.group.whitelist) },
         blacklistText: idListToText(cfg.blacklist),
@@ -142,6 +143,15 @@ export const plugin_set_config: PluginModule['plugin_set_config'] = async (ctx, 
     cfg.group = { ...(cfg.group ?? DEFAULT_CONFIG.group), whitelist: g.list, whitelistText: g.text };
     cfg.blacklist = b.list;
     cfg.blacklistText = b.text;
+
+    // 群级规则:合法 JSON 文本覆盖结构化规则;非法文本忽略,且不丢失已有规则
+    const parsedGroupRules = textToGroupRules(cfg.groupRulesText);
+    if (parsedGroupRules) {
+        cfg.groupRules = parsedGroupRules;
+    } else if (cfg.groupRules === undefined) {
+        cfg.groupRules = pluginState.config.groupRules ?? {};
+    }
+    cfg.groupRulesText = groupRulesToText(cfg.groupRules);
 
     pluginState.replaceConfig(cfg);
     ctx.logger.info('配置已通过 WebUI 更新, 当前规则数:', Array.isArray(cfg.keywords) ? cfg.keywords.length : 0);

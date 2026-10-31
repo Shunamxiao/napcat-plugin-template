@@ -3,7 +3,7 @@
  */
 
 import type { NapCatPluginContext, PluginConfigSchema } from 'napcat-types/napcat-onebot/network/plugin/types';
-import type { KeywordRule, PluginConfig } from './types';
+import type { GroupRule, KeywordRule, PluginConfig } from './types';
 
 
 /** 规则数组 → 多行文本(每行: 匹配词|类型|回复) */
@@ -28,6 +28,23 @@ export function textToKeywords(text: string): KeywordRule[] {
         .filter((k): k is KeywordRule => k !== null);
 }
 
+/** 群级规则 → JSON 文本(供配置表单编辑) */
+export function groupRulesToText(rules: Record<string, GroupRule> | undefined): string {
+    return JSON.stringify(rules ?? {}, null, 2);
+}
+
+/** JSON 文本 → 群级规则;解析失败或顶层非对象返回 null,表示忽略本次文本 */
+export function textToGroupRules(text: string | undefined): Record<string, GroupRule> | null {
+    if (typeof text !== 'string' || !text.trim()) return null;
+    try {
+        const parsed: unknown = JSON.parse(text);
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+        return parsed as Record<string, GroupRule>;
+    } catch {
+        return null;
+    }
+}
+
 export const DEFAULT_CONFIG: PluginConfig = {
     enabled: true,
     debug: false,
@@ -36,6 +53,7 @@ export const DEFAULT_CONFIG: PluginConfig = {
     replyDelayMaxMs: 1200,
     atOnly: false,
     groupConfigs: {},
+    groupRules: {},
     keywords: [
         { match: "有", matchType: "prefix", reply: "群里没有找到吗，先直接去https://apks.cc搜索下载下，这个是群里小伙伴给我的，下载后使用uu安装更新都行" },
         { match: "下载", reply: "群里没有找到吗，先直接去https://apks.cc搜索下载下，这个是群里小伙伴给我的，下载后使用uu安装更新都行" },
@@ -77,6 +95,7 @@ export function buildConfigSchema(ctx: NapCatPluginContext): PluginConfigSchema 
         ctx.NapCatConfig.number('replyDelayMinMs', '回复延迟下限(毫秒)', 300, '回复前随机延迟下限,拟人化行为,降低风控风险'),
         ctx.NapCatConfig.number('replyDelayMaxMs', '回复延迟上限(毫秒)', 1200, '回复前随机延迟上限,需大于等于下限'),
         ctx.NapCatConfig.boolean('atOnly', '群聊仅被 @ 时回复', false, '开启后群聊只有 @ 机器人的消息才会触发自动回复'),
+        ctx.NapCatConfig.text('groupRulesText', '群级规则(JSON)', groupRulesToText(DEFAULT_CONFIG.groupRules), 'JSON 对象，键为群号，值 {enabled,atOnly,keywords:[{match,matchType,reply}]}。未配置的群沿用全局规则；enabled=false 该群不回复；atOnly 覆盖全局；keywords 非空时替代全局关键词。格式错误将被忽略'),
         ctx.NapCatConfig.text('private.whitelistText', '私聊白名单', idListToText(DEFAULT_CONFIG.private.whitelist), '每行一个 QQ 号,# 开头为注释。留空 = 对所有私聊生效;非空 = 仅名单内用户触发'),
         ctx.NapCatConfig.text('group.whitelistText', '群聊白名单(群号)', idListToText(DEFAULT_CONFIG.group.whitelist), '每行一个群号,# 开头为注释。留空 = 对所有群生效;非空 = 仅名单内群触发'),
         ctx.NapCatConfig.text('blacklistText', '黑名单', idListToText(DEFAULT_CONFIG.blacklist), '每行一个 QQ 号,# 开头为注释。名单内的用户不会触发任何自动回复'),

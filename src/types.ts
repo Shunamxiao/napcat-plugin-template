@@ -32,6 +32,16 @@ export interface GroupConfig {
     whitelistText?: string;
 }
 
+/** 群级规则：未设置的字段沿用全局配置 */
+export interface GroupRule {
+    /** 该群是否启用自动回复，false = 该群完全不回复 */
+    enabled?: boolean;
+    /** 是否仅 @ 机器人时回复，覆盖全局 atOnly */
+    atOnly?: boolean;
+    /** 该群专属关键词；非空时替代全局关键词 */
+    keywords?: KeywordRule[];
+}
+
 export interface PluginConfig {
     enabled: boolean;
     debug: boolean;
@@ -50,8 +60,12 @@ export interface PluginConfig {
     atOnly: boolean;
     /** 各群独立启用配置(群管理页使用) */
     groupConfigs: Record<string, GroupConfig>;
+    /** 群级规则：键为群号，未配置的群沿用全局规则 */
+    groupRules?: Record<string, GroupRule>;
     /** WebUI 编辑用的多行文本形式(不参与消息匹配) */
     keywordsText?: string;
+    /** 群级规则的 JSON 文本形式(供配置表单编辑，不参与消息匹配) */
+    groupRulesText?: string;
     /** 黑名单的多行文本形式(每行一个 QQ 号,# 注释) */
     blacklistText?: string;
 }
