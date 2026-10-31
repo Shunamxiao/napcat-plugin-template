@@ -26,7 +26,7 @@ function isObject(v: unknown): v is Record<string, unknown> {
  * 配置清洗函数
  * 确保从文件读取的配置符合预期类型，防止运行时错误
  */
-function sanitizeConfig(raw: unknown): PluginConfig {
+export function sanitizeConfig(raw: unknown): PluginConfig {
     // 深拷贝默认值,避免嵌套对象共享引用被运行时修改污染
     const out: PluginConfig = JSON.parse(JSON.stringify(DEFAULT_CONFIG));
 
@@ -269,7 +269,11 @@ class PluginState {
      * 合并更新配置
      */
     updateConfig(partial: Partial<PluginConfig>): void {
-        this.config = { ...this.config, ...partial };
+        // 嵌套对象先与旧值合并,防止部分更新时静默丢失未提交字段(如 private.whitelist)
+        const merged = { ...this.config, ...partial };
+        if (partial.private) merged.private = { ...this.config.private, ...partial.private };
+        if (partial.group) merged.group = { ...this.config.group, ...partial.group };
+        this.config = sanitizeConfig(merged);
         this.saveConfig();
     }
 

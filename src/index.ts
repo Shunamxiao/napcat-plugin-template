@@ -125,10 +125,10 @@ export const plugin_set_config: PluginModule['plugin_set_config'] = async (ctx, 
         // WebUI 提交了编辑后的规则文本 → 解析回结构化数组
         const parsed = textToKeywords(cfg.keywordsText);
         if (parsed.length > 0) cfg.keywords = parsed;
-        else cfg.keywordsText = keywordsToText(cfg.keywords);
+        else cfg.keywordsText = keywordsToText(Array.isArray(cfg.keywords) ? cfg.keywords : []);
     } else {
         // 文本缺失(如外部 API 直接改 keywords) → 从规则反推文本
-        cfg.keywordsText = keywordsToText(cfg.keywords);
+        cfg.keywordsText = keywordsToText(Array.isArray(cfg.keywords) ? cfg.keywords : []);
     }
     // 白名单/黑名单:文本存在则解析回数组,否则从数组反推文本(与 keywordsText 同一双向同步模式)
     const syncList = (list, text) => {
@@ -144,7 +144,7 @@ export const plugin_set_config: PluginModule['plugin_set_config'] = async (ctx, 
     cfg.blacklistText = b.text;
 
     pluginState.replaceConfig(cfg);
-    ctx.logger.info('配置已通过 WebUI 更新, 当前规则数:', cfg.keywords.length);
+    ctx.logger.info('配置已通过 WebUI 更新, 当前规则数:', Array.isArray(cfg.keywords) ? cfg.keywords.length : 0);
 };
 
 /**

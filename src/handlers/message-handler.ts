@@ -13,6 +13,7 @@ const DEFAULT_REPLY_RULE_KEY = 'default-reply';
 export async function handleMessage(ctx: NapCatPluginContext, event: OB11Message): Promise<void> {
     const config = pluginState.config;
     if (!config.enabled) return;
+    pluginState.incrementProcessed();
 
     const kind = event.message_type;
     if (kind !== 'private' && kind !== 'group') return;
