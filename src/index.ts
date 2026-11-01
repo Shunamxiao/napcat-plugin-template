@@ -561,17 +561,18 @@ function registerWebUI(ctx: NapCatPluginContext): void {
 
     // 注册仪表盘页面（显示在 NapCat WebUI 侧边栏）
     // 访问路径: /plugin/<plugin-id>/page/dashboard
+    // settings.html 随构建产物分发，写盘只是兜底；插件目录可能只读，失败不能拖累页面注册
     try {
         fs.writeFileSync(path.join(ctx.pluginPath, 'settings.html'), SETTINGS_PAGE_HTML);
-        router.page({
-            path: 'settings',
-            title: '自动回复配置',
-            htmlFile: 'settings.html',
-            description: '本账号私聊/群聊/关键词规则配置页',
-        });
     } catch (e) {
-        ctx.logger.warn('注册自动回复配置页失败:', e);
+        ctx.logger.debug('settings.html 写盘跳过:', e);
     }
+    router.page({
+        path: 'settings',
+        title: '自动回复配置',
+        htmlFile: 'settings.html',
+        description: '本账号私聊/群聊/关键词规则配置页',
+    });
 
     router.page({
         path: 'dashboard',
