@@ -14,7 +14,8 @@ import fs from 'fs';
 import path from 'path';
 import type { NapCatPluginContext, PluginLogger } from 'napcat-types/napcat-onebot/network/plugin/types';
 import { DEFAULT_CONFIG, groupRulesToText, textToGroupRules } from '../config';
-import type { BlockUser, KeywordRule, PluginConfig, GroupConfig, GroupRule } from '../types';
+import type { BlockUser, KeywordRule, PluginConfig, GroupConfig, GroupRule, RuleAction } from '../types';
+import type { CollectSession } from './collect';
 
 // ==================== 配置清洗工具 ====================
 
@@ -79,6 +80,11 @@ export function sanitizeBlockUsers(raw: unknown): BlockUser[] {
     return out;
 }
 
+/** 规则动作白名单，非法值一律回落 reply（旧配置无此字段时同样按 reply） */
+export function normalizeRuleAction(raw: unknown): RuleAction {
+    return raw === 'ai' ? 'ai' : raw === 'human' ? 'human' : 'reply';
+}
+
 /** 清洗单条关键词规则,结构或内容非法时返回 null */
 function sanitizeKeywordRule(raw: unknown): KeywordRule | null {
     if (!isObject(raw)) return null;
@@ -90,11 +96,14 @@ function sanitizeKeywordRule(raw: unknown): KeywordRule | null {
             .map((item) => item.trim())
             .filter(Boolean)
         : [];
-    if (!reply && replies.length === 0) return null;
+    const action = normalizeRuleAction(raw.action);
+    // action=ai 不需要文案；其余动作至少要有一句话术（图片不能替代文字）
+    if (action !== 'ai' && !reply && replies.length === 0) return null;
     const rule: KeywordRule = {
         match: raw.match,
         matchType: raw.matchType === 'prefix' ? 'prefix' : raw.matchType === 'regex' ? 'regex' : 'contains',
         reply: reply || replies[0] || '',
+        action,
     };
     if (replies.length > 0) rule.replies = replies;
     if (typeof raw.image === 'string' && raw.image.trim()) rule.image = raw.image.trim();
@@ -122,6 +131,15 @@ function sanitizeGroupRules(raw: Record<string, unknown>): Record<string, GroupR
                 welcome.template = null;
             }
             if (Object.keys(welcome).length > 0) item.welcome = welcome;
+        }
+        // 群级兜底话术：只保留 string/null，null 表示跟随全局
+        if (isObject(rule.fallback)) {
+            const fallback: NonNullable<GroupRule['fallback']> = {};
+            if (typeof rule.fallback.privateText === 'string') fallback.privateText = rule.fallback.privateText;
+            else if (rule.fallback.privateText === null) fallback.privateText = null;
+            if (typeof rule.fallback.groupAtText === 'string') fallback.groupAtText = rule.fallback.groupAtText;
+            else if (rule.fallback.groupAtText === null) fallback.groupAtText = null;
+            if (Object.keys(fallback).length > 0) item.fallback = fallback;
         }
         if (Array.isArray(rule.keywords)) {
             const keywords = rule.keywords.map(sanitizeKeywordRule).filter((k): k is KeywordRule => k !== null);
@@ -158,6 +176,28 @@ export function sanitizeConfig(raw: unknown): PluginConfig {
     if (isObject(raw.friendRequest)) {
         out.friendRequest = {
             autoAccept: typeof raw.friendRequest.autoAccept === 'boolean' ? raw.friendRequest.autoAccept : (out.friendRequest?.autoAccept ?? false),
+        };
+    }
+    if (isObject(raw.fallback)) {
+        out.fallback = {
+            privateText: typeof raw.fallback.privateText === 'string' ? raw.fallback.privateText : out.fallback.privateText,
+            groupAtText: typeof raw.fallback.groupAtText === 'string' ? raw.fallback.groupAtText : out.fallback.groupAtText,
+        };
+    }
+    if (isObject(raw.collect)) {
+        out.collect = {
+            enabled: typeof raw.collect.enabled === 'boolean' ? raw.collect.enabled : out.collect.enabled,
+            questions: Array.isArray(raw.collect.questions)
+                ? raw.collect.questions
+                    .filter((item): item is string => typeof item === 'string')
+                    .map((item) => item.trim())
+                    .filter(Boolean)
+                : out.collect.questions,
+        };
+    }
+    if (isObject(raw.relay)) {
+        out.relay = {
+            token: typeof raw.relay.token === 'string' ? raw.relay.token.trim() : out.relay.token,
         };
     }
     if (typeof raw.crossAccountDedup === 'boolean') out.crossAccountDedup = raw.crossAccountDedup;
@@ -256,6 +296,9 @@ class PluginState {
     /** 待发送的延迟回复定时器(卸载时取消,避免插件卸载后仍发出回复) */
     pendingReplies: Set<ReturnType<typeof setTimeout>> = new Set();
 
+    /** 转人工追问会话: key = private:qq / group:群号:qq */
+    collectSessions: Map<string, CollectSession> = new Map();
+
     /** 运行时统计 */
     stats = {
         processed: 0,
@@ -317,6 +360,10 @@ class PluginState {
         // 取消尚未发送的延迟回复,并清空冷却记录
         for (const timer of this.pendingReplies) clearTimeout(timer);
         this.pendingReplies.clear();
+        for (const session of this.collectSessions.values()) {
+            if (session.timer) clearTimeout(session.timer);
+        }
+        this.collectSessions.clear();
         this.replyCooldowns.clear();
         this.saveConfig();
         this._ctx = null;
@@ -437,6 +484,15 @@ class PluginState {
                 ...partial.friendRequest,
             };
         }
+        if (partial.fallback) {
+            merged.fallback = {
+                privateText: this.config.fallback?.privateText ?? '',
+                groupAtText: this.config.fallback?.groupAtText ?? '',
+                ...partial.fallback,
+            };
+        }
+        if (partial.collect) merged.collect = { ...this.config.collect, ...partial.collect };
+        if (partial.relay) merged.relay = { ...this.config.relay, ...partial.relay };
         // 群级规则文本:合法 JSON 才覆盖结构化规则,非法文本忽略
         if (typeof partial.groupRulesText === 'string') {
             const parsed = textToGroupRules(partial.groupRulesText);

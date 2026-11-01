@@ -7,13 +7,23 @@ import type { NapCatPluginContext } from 'napcat-types/napcat-onebot/network/plu
 import { pluginState } from '../core/state';
 import { isBlocked } from '../core/blocklist';
 import { pickReply, planReply, resolveSend, type Plan } from '../core/escalation';
+import { isGroupConfigured, resolveGroupFallback, resolveGroupPolicy } from '../core/policy';
+import { appendHandoffRecord } from '../core/handoff';
+import { sendWithRetry } from '../core/send-retry';
+import {
+    beginCollect,
+    clearCollect,
+    collectKey,
+    COLLECT_TIMEOUT_MS,
+    getCollect,
+    stepCollect,
+    type CollectAnswer,
+    type CollectSession,
+} from '../core/collect';
 import { askService } from '../services/kb-client';
 import type { KeywordRule } from '../types';
 import fs from 'fs';
 import path from 'path';
-
-/** 私聊兜底回复在冷却记录中的规则键 */
-const DEFAULT_REPLY_RULE_KEY = 'default-reply';
 
 const CLAIM_DIR = '/root/qq-accounts/shared/claims';
 
@@ -65,10 +75,12 @@ export async function handleMessage(ctx: NapCatPluginContext, event: OB11Message
     const text = extractText(event);
     if (!text) return;
 
-    // 私聊
+    // 私聊：必回 —— 命中规则按规则，未命中/服务无答案一律发兜底话术
     if (kind === 'private') {
         if (!config.private.enabled) return;
         if (!checkWhitelist(config.private.whitelist, senderId)) return;
+        // 追问中的用户消息优先作为答案消费，不再走关键词/FAQ
+        if (await consumeCollectAnswer(ctx, event, collectKey('private', senderId), senderId, undefined, text, 'private')) return;
         const hit = matchKeywords(config.keywords, text);
         const plan = planReply({
             kind: 'private',
@@ -80,30 +92,39 @@ export async function handleMessage(ctx: NapCatPluginContext, event: OB11Message
             aiTrigger: config.aiTrigger,
             groupAiEnabled: true,
         });
-        // 规则命中(含 aiFallback)沿用原冷却粒度,冷却期内整条不发
-        if ((plan.kind === 'rule' || plan.kind === 'rule-ai') && isOnCooldown(senderId, plan.rule.match)) return;
+        // 规则命中(含 aiFallback/action)沿用原冷却粒度,冷却期内整条不发
+        if (isRuleCooldown(senderId, plan)) return;
         const ask = needsAsk(plan) ? await askKnowledge(text, senderId, undefined, 'private') : null;
-        const out = resolveSend({ plan, ask: ask ? { reply: ask } : null, kind: 'private', defaultReply: config.private.defaultReply });
-        if (!out.send) return;
-        // 私聊兜底话术沿用原来的冷却键
-        if (out.source === 'default' && isOnCooldown(senderId, DEFAULT_REPLY_RULE_KEY)) return;
+        if (plan.kind === 'rule-human') {
+            if (startCollect(ctx, event, senderId, undefined, text, plan.rule.match, 'private')) return;
+            recordHandoff({ userId: senderId, text, rule: plan.rule.match, kind: 'private' });
+        }
+        const out = resolveSend({
+            plan,
+            ask: ask ? { reply: ask } : null,
+            kind: 'private',
+            defaultReply: config.fallback?.privateText ?? '',
+        });
+        if (!out.send || (!out.text && !out.image)) return;
         scheduleReply(ctx, event, { text: out.text || '', image: out.image }, '[私聊] ' + senderId + sourceTag(out.source));
         return;
     }
 
-    // 群聊
+    // 群聊：只有 groupRules 里配置过的群才处理，未配置群一律静默（含 @）
     if (kind === 'group') {
         if (!config.group.enabled) return;
         const groupId = String(event.group_id ?? '');
         if (!checkWhitelist(config.group.whitelist, groupId)) return;
-        // 群级规则优先:enabled=false 整群跳过,未设置的字段沿用全局
         const groupRule = config.groupRules?.[groupId];
-        if (groupRule?.enabled === false) return;
+        if (!isGroupConfigured(config, groupId) || !groupRule) return;
+        const policy = resolveGroupPolicy(config, groupId);
+        if (!policy.enabled.value) return;
+        // 追问中的用户消息优先作为答案消费；不要求 @，否则群内无法回答
+        if (await consumeCollectAnswer(ctx, event, collectKey('group', senderId, groupId), senderId, groupId, text, 'group')) return;
         const atBot = isDirectedAtBot(event, selfId);
-        const atOnly = groupRule?.atOnly ?? config.atOnly;
-        if (atOnly && !atBot) return;
+        if (policy.atOnly.value && !atBot) return;
         // 群专属关键词非空时只按群规则匹配,避免全局规则串群
-        const keywords = groupRule?.keywords?.length ? groupRule.keywords : config.keywords;
+        const keywords = groupRule.keywords?.length ? groupRule.keywords : config.keywords;
         const hit = matchKeywords(keywords, text);
         const plan = planReply({
             kind: 'group',
@@ -112,18 +133,168 @@ export async function handleMessage(ctx: NapCatPluginContext, event: OB11Message
             rule: hit,
             blockUsers: config.blocklist?.users,
             kbEnabled: config.kbService?.enabled === true,
-            aiTrigger: config.aiTrigger,
-            groupAiEnabled: groupRule?.aiEnabled !== false,
+            // 群内未 @ 且未命中关键词必须静默：未命中时不允许升级 AI，只有 @ 才走 FAQ/AI
+            aiTrigger: { private: config.aiTrigger.private, groupAtOnly: true },
+            groupAiEnabled: policy.aiEnabled.value,
         });
-        if (plan.kind === 'none' || plan.kind === 'blocked') return;
-        if ((plan.kind === 'rule' || plan.kind === 'rule-ai') && isOnCooldown(senderId, plan.rule.match)) return;
+        if (plan.kind === 'blocked') return;
+        if (isRuleCooldown(senderId, plan)) return;
         // 多账号同群去重:规则回复与 AI 回复都只允许一个实例发
         if (!tryClaimReply(String(event.message_id ?? ''), groupId)) return;
         const ask = needsAsk(plan) ? await askKnowledge(text, senderId, groupId, 'group_at') : null;
-        const out = resolveSend({ plan, ask: ask ? { reply: ask } : null, kind: 'group' });
+        if (plan.kind === 'rule-human') {
+            if (startCollect(ctx, event, senderId, groupId, text, plan.rule.match, 'group')) return;
+            recordHandoff({ userId: senderId, groupId, text, rule: plan.rule.match, kind: 'group' });
+        }
+        const fallback = resolveGroupFallback(config, groupId);
+        const out = resolveSend({
+            plan,
+            ask: ask ? { reply: ask } : null,
+            kind: 'group',
+            atBot,
+            groupFallback: fallback.groupAtText,
+        });
         if (!out.send || (!out.text && !out.image)) return;
         scheduleReply(ctx, event, { text: out.text || '', image: out.image }, '[群聊] ' + groupId + sourceTag(out.source));
     }
+}
+
+/** 规则类计划共用的冷却键；AI/兜底不占用规则冷却 */
+function isRuleCooldown(senderId: string, plan: Plan): boolean {
+    if (plan.kind === 'rule' || plan.kind === 'rule-ai' || plan.kind === 'rule-ai-only' || plan.kind === 'rule-human') {
+        return isOnCooldown(senderId, plan.rule.match);
+    }
+    return false;
+}
+
+/**
+ * action=human：
+ * - collect 关闭（默认）→ 直接发兜底话术并留档
+ * - collect 开启 → 先逐条追问，答完/超时后再发兜底话术，collected 一并留档
+ * 全程不查 FAQ、不调 AI。
+ */
+function startCollect(
+    ctx: NapCatPluginContext,
+    event: OB11Message,
+    userId: string,
+    groupId: string | undefined,
+    triggerText: string,
+    rule: string,
+    kind: 'private' | 'group',
+): boolean {
+    const conf = pluginState.config.collect;
+    const questions = (conf?.questions ?? []).map((q) => q.trim()).filter(Boolean).slice(0, 10);
+    if (!conf?.enabled || questions.length === 0) return false;
+    const session = beginCollect(pluginState.collectSessions, collectKey(kind, userId, groupId), {
+        userId,
+        groupId,
+        triggerText,
+        rule,
+        questions,
+    });
+    session.event = event;
+    armCollectTimer(ctx, session, kind);
+    pluginState.logger.info('[转人工追问] ' + kind + ' user=' + userId + (groupId ? ' group=' + groupId : '') + ' 共 ' + questions.length + ' 题');
+    scheduleReply(ctx, event, { text: questions[0] }, '[转人工追问] ' + userId);
+    return true;
+}
+
+/** 追问中的下一条消息作为答案；返回 true 表示已消费，不再走规则/FAQ */
+async function consumeCollectAnswer(
+    ctx: NapCatPluginContext,
+    event: OB11Message,
+    key: string,
+    userId: string,
+    groupId: string | undefined,
+    text: string,
+    kind: 'private' | 'group',
+): Promise<boolean> {
+    const session = getCollect(pluginState.collectSessions, key);
+    if (!session) return false;
+    const step = stepCollect(session, text);
+    if (step.done) {
+        finalizeCollect(ctx, session, kind, 'keyword_human');
+        return true;
+    }
+    armCollectTimer(ctx, session, kind);
+    scheduleReply(ctx, event, { text: step.nextQuestion ?? '' }, '[转人工追问] ' + userId);
+    return true;
+}
+
+/** 每答一题重置 5 分钟超时；超时按已收集内容转人工 */
+function armCollectTimer(ctx: NapCatPluginContext, session: CollectSession, kind: 'private' | 'group'): void {
+    if (session.timer) clearTimeout(session.timer);
+    const timer = setTimeout(() => {
+        if (pluginState.collectSessions.get(session.key) !== session) return;
+        session.timer = undefined;
+        finalizeCollect(ctx, session, kind, 'collect_timeout');
+    }, COLLECT_TIMEOUT_MS);
+    session.timer = timer;
+}
+
+/** 结束追问：发兜底话术并留档（collected 可能为空） */
+function finalizeCollect(
+    ctx: NapCatPluginContext,
+    session: CollectSession,
+    kind: 'private' | 'group',
+    reason: 'keyword_human' | 'collect_timeout',
+): void {
+    const answerEvent = session.event as OB11Message | undefined;
+    clearCollect(pluginState.collectSessions, session);
+    // 群里被移出白名单/关闭后不再补发，避免配置变更后继续发消息
+    const groupActive = kind !== 'group' || (
+        isGroupConfigured(pluginState.config, session.groupId ?? '') &&
+        resolveGroupPolicy(pluginState.config, session.groupId ?? '').enabled.value
+    );
+    const fallback = kind === 'private'
+        ? pluginState.config.fallback?.privateText ?? ''
+        : resolveGroupFallback(pluginState.config, session.groupId ?? '').groupAtText;
+    recordHandoff({
+        userId: session.userId,
+        groupId: session.groupId,
+        text: session.triggerText,
+        rule: session.rule,
+        kind,
+        reply: fallback,
+        collected: session.answers,
+        reason,
+    });
+    if (fallback && answerEvent && groupActive) {
+        scheduleReply(ctx, answerEvent, { text: fallback }, '[转人工] ' + session.userId);
+    }
+}
+
+/** 写一条转人工留档；失败只告警，不影响回复 */
+function recordHandoff(args: {
+    userId: string;
+    groupId?: string;
+    text: string;
+    rule?: string;
+    kind: 'private' | 'group';
+    reply?: string;
+    collected?: CollectAnswer[];
+    reason?: string;
+}): void {
+    const reason = args.reason ?? 'keyword_human';
+    const collected: CollectAnswer[] = args.collected ?? [];
+    const file = pluginState.getDataFilePath('handoff.jsonl');
+    const ok = appendHandoffRecord(file, {
+        ts: new Date().toISOString(),
+        userId: args.userId,
+        groupId: args.groupId,
+        text: args.text,
+        reason,
+        rule: args.rule,
+        reply: args.reply,
+        collected,
+    });
+    pluginState.logger.info(
+        '[转人工] reason=' + reason + ' ' + args.kind + ' user=' + args.userId +
+        (args.groupId ? ' group=' + args.groupId : '') +
+        (args.rule ? ' rule=' + args.rule : '') +
+        ' collected=' + JSON.stringify(collected),
+    );
+    if (!ok) pluginState.logger.warn('[转人工] 留档写入失败: ' + file);
 }
 
 /** 日志后缀:区分规则回复与 AI 回复,便于排查 */
@@ -135,7 +306,7 @@ function sourceTag(source: 'rule' | 'ai' | 'default' | 'none'): string {
 
 /** 需要先问服务的计划 */
 function needsAsk(plan: Plan): boolean {
-    return plan.kind === 'ai' || plan.kind === 'rule-ai';
+    return plan.kind === 'ai' || plan.kind === 'rule-ai' || plan.kind === 'rule-ai-only';
 }
 
 /** 升级 AI 前清掉 CQ 码，避免把 [CQ:at,...] 原文发给服务 */
@@ -228,15 +399,30 @@ function scheduleReply(ctx: NapCatPluginContext, event: OB11Message, content: { 
     pluginState.pendingReplies.add(timer);
 }
 
-/** 发送回复并记录日志,失败可定位不静默 */
+/** 发送回复并记录日志；群消息失败时记一条群维度告警并只重试一次 */
 async function sendReply(ctx: NapCatPluginContext, event: OB11Message, content: { text: string; image?: string }, logTag: string): Promise<void> {
-    try {
-        await replyMessage(ctx, event, content);
+    const isGroup = event.message_type === 'group' && !!event.group_id;
+    const groupId = String(event.group_id ?? '');
+    const result = await sendWithRetry(
+        () => replyMessage(ctx, event, content),
+        isGroup ? 2 : 1,
+        (error, attempt) => {
+            // 只记一条群维度告警：首次失败即告警，重试结果另记一行
+            if (isGroup && attempt === 1) {
+                pluginState.logger.error('[告警][群 ' + groupId + '] 回复发送失败，重试一次:', error);
+            }
+        },
+    );
+    if (result.ok) {
         const desc = (content.text || "") + (content.image ? " [图片]" : "");
-        pluginState.logger.info(logTag + " → " + desc.slice(0, 60));
-    } catch (e) {
-        pluginState.logger.error(logTag + " 回复发送失败:", e);
+        pluginState.logger.info(logTag + (result.attempts > 1 ? "（重试后成功）" : "") + " → " + desc.slice(0, 60));
+        return;
     }
+    if (isGroup) {
+        pluginState.logger.error('[告警][群 ' + groupId + '] 重试后仍发送失败:', result.errors[result.errors.length - 1]);
+        return;
+    }
+    pluginState.logger.error(logTag + " 回复发送失败:", result.errors[0]);
 }
 function checkWhitelist(list: (number | string)[], id: string): boolean {
     if (!list || list.length === 0) return true;

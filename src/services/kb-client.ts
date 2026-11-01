@@ -12,6 +12,8 @@ export interface AskRequest {
     userId: string;
     groupId?: string;
     trigger: 'private' | 'group_at';
+    /** 转人工追问答案；与服务侧字段名统一为 collected */
+    collected?: { q: string; a: string }[];
 }
 
 export interface AskResponse {
@@ -70,8 +72,9 @@ export async function askService(
     req: AskRequest,
     fetchImpl: FetchLike = fetch,
 ): Promise<AskResponse | null> {
-    const body: Record<string, string> = { text: req.text, userId: req.userId, trigger: req.trigger };
+    const body: Record<string, unknown> = { text: req.text, userId: req.userId, trigger: req.trigger };
     if (req.groupId) body.groupId = req.groupId;
+    if (req.collected && req.collected.length > 0) body.collected = req.collected;
 
     const data = await requestJson(
         cfg,

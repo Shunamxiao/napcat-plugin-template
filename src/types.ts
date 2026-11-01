@@ -2,12 +2,17 @@
  * 类型定义 — QQ 自动回复插件
  */
 
+/** 规则命中后的动作 */
+export type RuleAction = "reply" | "ai" | "human";
+
 /** 单条关键词规则 */
 export interface KeywordRule {
     /** 匹配文本 */
     match: string;
     /** 匹配方式：contains(包含,默认) | prefix(前缀) | regex(正则) */
     matchType?: "contains" | "prefix" | "regex";
+    /** 命中后的动作：reply(回话术,默认) | ai(跳过话术直接问服务) | human(转人工,回兜底话术并记日志) */
+    action?: RuleAction;
     /** 回复内容；replies 非空时作为兜底 */
     reply: string;
     /** 回复池：非空时随机选一条发送，优先于 reply */
@@ -76,7 +81,7 @@ export interface GroupConfig {
 
 /** 群级规则：未设置的字段沿用全局配置 */
 export interface GroupRule {
-    /** 该群是否启用自动回复，false = 该群完全不回复 */
+    /** 该群是否启用自动回复，false = 该群完全不回复；未在 groupRules 出现的群一律不处理 */
     enabled?: boolean;
     /** 是否仅 @ 机器人时回复，覆盖全局 atOnly */
     atOnly?: boolean;
@@ -86,6 +91,14 @@ export interface GroupRule {
     aiEnabled?: boolean;
     /** 该群入群欢迎覆盖；字段为 null/缺省时跟随全局 groupWelcome */
     welcome?: GroupWelcomeOverride;
+    /** 该群兜底话术覆盖；字段为 null/缺省时跟随全局 fallback */
+    fallback?: GroupFallbackOverride;
+}
+
+/** 群级兜底话术覆盖：null/缺省 = 跟随全局 */
+export interface GroupFallbackOverride {
+    privateText?: string | null;
+    groupAtText?: string | null;
 }
 
 /** 群级入群欢迎覆盖：null/缺省 = 跟随全局 */
@@ -110,6 +123,27 @@ export interface FriendRequestConfig {
     autoAccept: boolean;
 }
 
+/** 兜底话术：私聊未命中必回；群内 @ 未命中必回 */
+export interface FallbackConfig {
+    /** 私聊未命中关键词/FAQ 时的兜底话术；空 = 不回 */
+    privateText: string;
+    /** 群内被 @ 但未命中关键词/FAQ 时的兜底话术；空 = 不回 */
+    groupAtText: string;
+}
+
+/** 转人工追问：关闭时直接转人工；开启时按顺序逐条发问再转人工 */
+export interface CollectConfig {
+    enabled: boolean;
+    /** 问题列表，按顺序逐条追问；一行一题 */
+    questions: string[];
+}
+
+/** 反向下发（Telegram 回流）配置 */
+export interface RelayConfig {
+    /** x-relay-token；空 = 拒绝 /api/relay */
+    token: string;
+}
+
 export interface PluginConfig {
     enabled: boolean;
     debug: boolean;
@@ -132,6 +166,12 @@ export interface PluginConfig {
     groupWelcome?: GroupWelcomeConfig;
     /** 好友申请处理 */
     friendRequest?: FriendRequestConfig;
+    /** 兜底话术（私聊必回 / 群内 @ 必回） */
+    fallback: FallbackConfig;
+    /** 转人工追问 */
+    collect: CollectConfig;
+    /** 反向下发端点令牌 */
+    relay: RelayConfig;
     /** 各群独立启用配置(群管理页使用) */
     groupConfigs: Record<string, GroupConfig>;
     /** 群级规则：键为群号，未配置的群沿用全局规则 */

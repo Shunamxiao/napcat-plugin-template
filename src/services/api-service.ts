@@ -21,7 +21,17 @@ import type {
     PluginHttpRequest,
     PluginHttpResponse
 } from 'napcat-types/napcat-onebot/network/plugin/types';
+import { timingSafeEqual } from 'crypto';
 import { maskConfig, pluginState } from '../core/state';
+import { buildGroupPolicies } from '../core/policy';
+
+/** 令牌比较：长度不同直接失败，等长走常量时间比较 */
+function tokenMatches(provided: string, expected: string): boolean {
+    if (!expected) return false;
+    const a = Buffer.from(provided);
+    const b = Buffer.from(expected);
+    return a.length === b.length && timingSafeEqual(a, b);
+}
 
 /**
  * 注册 API 路由
@@ -49,7 +59,11 @@ export function registerApiRoutes(ctx: NapCatPluginContext): void {
 
     /** 获取配置（令牌打码；真 token 绝不下发） */
     router.getNoAuth('/config', (_req, res) => {
-        res.json({ code: 0, data: maskConfig(pluginState.config) });
+        const config = pluginState.config;
+        res.json({
+            code: 0,
+            data: { ...maskConfig(config), groupPolicies: buildGroupPolicies(config) },
+        });
     });
 
     /** 保存配置 */
@@ -65,6 +79,46 @@ export function registerApiRoutes(ctx: NapCatPluginContext): void {
         } catch (err) {
             ctx.logger.error('保存配置失败:', err);
             res.status(500).json({ code: -1, message: err instanceof Error ? err.message : String(err) });
+        }
+    });
+
+    // ==================== 反向下发（服务侧 Telegram 回流）====================
+
+    /**
+     * POST /relay
+     * body: { userId, groupId?, text }
+     * header: x-relay-token（与配置 relay.token 一致；未配置 = 拒绝）
+     * 成功 {ok:true,sent:true}；失败返回非 2xx + {ok:false,error}，服务侧按 HTTP 状态判定。
+     */
+    router.postNoAuth('/relay', async (req, res) => {
+        const expected = pluginState.config.relay?.token ?? '';
+        if (!expected) {
+            return res.status(403).json({ ok: false, error: 'relay 未启用（relay.token 为空）' });
+        }
+        const rawHeader = req.headers?.['x-relay-token'];
+        const provided = Array.isArray(rawHeader) ? rawHeader[0] ?? '' : rawHeader ?? '';
+        if (!tokenMatches(String(provided), expected)) {
+            return res.status(401).json({ ok: false, error: 'x-relay-token 无效' });
+        }
+        const body = (req.body ?? {}) as Record<string, unknown>;
+        const userId = body.userId != null ? String(body.userId).trim() : '';
+        const groupId = body.groupId != null ? String(body.groupId).trim() : '';
+        const text = typeof body.text === 'string' ? body.text : '';
+        if (!userId || !text.trim()) {
+            return res.status(400).json({ ok: false, error: 'userId 与 text 不能为空' });
+        }
+        try {
+            const message = [{ type: 'text', data: { text } }];
+            const params: Record<string, unknown> = groupId
+                ? { message_type: 'group', group_id: groupId, message }
+                : { message_type: 'private', user_id: userId, message };
+            await ctx.actions.call('send_msg', params, ctx.adapterName, ctx.pluginManager.config);
+            ctx.logger.info('[relay] 已下发 user=' + userId + (groupId ? ' group=' + groupId : ''));
+            res.json({ ok: true, sent: true });
+        } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            ctx.logger.error('[relay] 下发失败 user=' + userId + (groupId ? ' group=' + groupId : '') + ': ' + message);
+            res.status(502).json({ ok: false, error: message });
         }
     });
 

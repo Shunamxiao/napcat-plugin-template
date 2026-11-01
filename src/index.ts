@@ -31,6 +31,7 @@ import path from 'path';
 
 import { DEFAULT_CONFIG, buildConfigSchema, groupRulesToText, idListToText, keywordsToText, textToGroupRules, textToIdList, textToKeywords } from './config';
 import { maskConfig, pluginState } from './core/state';
+import { buildGroupPolicies } from './core/policy';
 import { startBlocklistSync, stopBlocklistSync } from './core/blocklist';
 import { handleMessage } from './handlers/message-handler';
 import { handleOneBotEvent } from './handlers/event-handler';
@@ -124,6 +125,7 @@ export const plugin_get_config: PluginModule['plugin_get_config'] = async (ctx) 
         ...cfg,
         keywordsText: keywordsToText(cfg.keywords),
         groupRulesText: groupRulesToText(cfg.groupRules),
+        groupPolicies: buildGroupPolicies(cfg),
         private: { ...cfg.private, whitelistText: idListToText(cfg.private.whitelist) },
         group: { ...cfg.group, whitelistText: idListToText(cfg.group.whitelist) },
         blacklistText: idListToText(cfg.blacklist),
@@ -168,6 +170,10 @@ export const plugin_set_config: PluginModule['plugin_set_config'] = async (ctx, 
     if (!cfg.kbService) cfg.kbService = pluginState.config.kbService;
     if (!cfg.aiTrigger) cfg.aiTrigger = pluginState.config.aiTrigger;
     if (!cfg.blocklist) cfg.blocklist = pluginState.config.blocklist;
+    if (!cfg.fallback) cfg.fallback = pluginState.config.fallback;
+    if (!cfg.collect) cfg.collect = pluginState.config.collect;
+    else if (!Array.isArray(cfg.collect.questions)) cfg.collect.questions = pluginState.config.collect.questions;
+    if (!cfg.relay) cfg.relay = pluginState.config.relay;
 
     pluginState.replaceConfig(cfg);
     ctx.logger.info('配置已通过 WebUI 更新, 当前规则数:', Array.isArray(cfg.keywords) ? cfg.keywords.length : 0);
@@ -215,15 +221,19 @@ button.gray{background:#8a8f9c}button.danger{background:#e5484d}
 .gkw{display:flex;gap:8px;align-items:flex-start;padding:6px 0;border-bottom:1px dashed #eee}
 .tag{font-size:12px;padding:2px 8px;border-radius:6px;background:#eef;color:#345}
 .muted{color:#888;font-size:12px}
+.policy{margin:6px 0 8px;color:#4a5568;background:#eef2ff;border-radius:8px;padding:5px 9px}
 .toast{position:fixed;top:14px;right:14px;background:#222;color:#fff;padding:10px 14px;border-radius:8px;font-size:13px;z-index:99}
 .toast.err{background:#c0392b}
 </style></head><body>
 <h1>QQ 自动回复配置</h1>
 <div class="card"><h2>总开关</h2><label><input type="checkbox" id="enabled"> 启用自动回复</label><p class="muted">关闭后私聊与群聊都不再自动回复。</p></div>
-<div class="card"><h2>私聊</h2><label><input type="checkbox" id="pv-enabled"> 私聊自动回复</label><div class="row"><label>兜底话术</label><input type="text" id="pv-default" class="w-reply" placeholder="未命中关键词时的回复，留空=不回复"></div></div>
+<div class="card"><h2>私聊</h2><label><input type="checkbox" id="pv-enabled"> 私聊自动回复</label><p class="muted">未命中关键词/FAQ 时回下方「私聊兜底」。</p></div>
+<div class="card"><h2>兜底话术</h2><p class="muted">私聊未命中关键词/FAQ 必回第一句；群内被 @ 但未命中必回第二句；群内未 @ 且未命中静默不回。群级规则可单独覆盖。</p><div class="row"><label>私聊兜底</label><input type="text" id="fb-private" class="w-reply" placeholder="私聊兜底话术"></div><div class="row"><label>群内 @ 兜底</label><input type="text" id="fb-group-at" class="w-reply" placeholder="群内 @ 兜底话术"></div></div>
+<div class="card"><h2>转人工追问</h2><p class="muted">仅当关键词动作=「转人工」时生效。关闭 = 直接回兜底话术；开启 = 按顺序逐条发问并等待回答，同一用户 5 分钟未答按超时处理。</p><label><input type="checkbox" id="collect-enabled"> 开启追问</label><textarea id="collect-questions" placeholder="一行一题，例如：&#10;你的 QQ 号是多少？&#10;具体是哪个游戏/资源？"></textarea></div>
+<div class="card"><h2>反向下发（relay）</h2><p class="muted">供服务侧 Telegram 回流调用：POST /plugin/napcat-plugin-autoreply/api/relay，请求头 x-relay-token 必须与这里一致；令牌为空时该端点直接拒绝。</p><div class="row"><label>relay 令牌</label><input type="text" id="relay-token" class="w-reply" placeholder="留空 = 禁用 /api/relay"></div></div>
 <div class="card"><h2>关键词规则</h2><p class="muted">每条规则一行：匹配词 + 类型（包含/前缀/正则）+ 回复话术。回复可填多条，用 ||| 分隔，命中后随机选一条；正则示例：^有.+ 或 下载|安装。</p><div id="kw-list"></div><div class="row"><button class="gray" id="kw-add">+ 添加规则</button></div></div>
 <div class="card"><h2>群聊</h2><div class="row"><label><input type="checkbox" id="gr-enabled"> 开启群消息自动回复</label><label><input type="checkbox" id="gr-atonly"> 仅被 @ 时回复</label></div><div class="row"><label>冷却（秒）</label><input type="number" id="cooldown" class="w-match" min="0"> <label>延迟(ms)</label><input type="number" id="delay-min" class="w-match" min="0"> ~ <input type="number" id="delay-max" class="w-match" min="0"></div><p class="muted">冷却：同一人触发同一规则的最短间隔；延迟：回复前随机等待，拟人防风控。</p></div>
-<div class="card"><h2>群级规则（可选）</h2><p class="muted">按群单独配置（仍受上方群聊总开关控制）：可关闭本群自动回复、设置仅 @ 时回复，或配置本群专属关键词。本群专属关键词留空时沿用全局关键词；回复多条用 ||| 分隔。</p><div id="grp-list"></div><p class="muted" id="grp-empty">尚未添加群级规则。</p><div class="row"><button class="gray" id="grp-add">+ 添加群规则</button></div><div class="row" id="grp-add-row" style="display:none"><input type="text" id="grp-new-id" class="w-match" inputmode="numeric" placeholder="群号（纯数字）"><button id="grp-add-confirm">确定添加</button><button class="gray" id="grp-add-cancel">取消</button></div></div>
+<div class="card"><h2>群级规则（可选）</h2><p class="muted">按群单独配置（仍受上方群聊总开关控制）。<b>只有列在下面的群才会被处理，未列出的群一律静默（即使被 @ 也不回）。</b>可关闭本群自动回复、设置仅 @ 时回复，或配置本群专属关键词。本群专属关键词留空时沿用全局关键词；回复多条用 ||| 分隔。</p><div id="grp-list"></div><p class="muted" id="grp-empty">尚未添加群级规则。</p><div class="row"><button class="gray" id="grp-add">+ 添加群规则</button></div><div class="row" id="grp-add-row" style="display:none"><input type="text" id="grp-new-id" class="w-match" inputmode="numeric" placeholder="群号（纯数字）"><button id="grp-add-confirm">确定添加</button><button class="gray" id="grp-add-cancel">取消</button></div></div>
 <div class="card"><h2>知识库 / AI</h2><p class="muted">开启后：未命中关键词的私聊/群消息会先问知识库服务；命中规则且勾选「允许升级 AI」时也先问服务，拿不到答案再退回规则话术。服务不可用时保持原有自动回复。</p><div class="row"><label><input type="checkbox" id="kb-enabled"> 启用知识库 / AI</label><label>超时(ms)</label><input type="number" id="kb-timeout" class="w-match" min="500" max="60000"></div><div class="row"><label>服务地址</label><input type="text" id="kb-baseurl" class="w-reply" placeholder="https://qqbot.theworld.codes"></div><div class="row"><label>访问令牌</label><input type="password" id="kb-token" class="w-reply" autocomplete="new-password" placeholder="x-bot-token（留空 = 不调用服务）"></div><div class="row"><label><input type="checkbox" id="ai-private"> 私聊未命中升级 AI</label><label><input type="checkbox" id="ai-group-atonly"> 群内仅 @ / 回复机器人时升级 AI</label></div><div class="row"><label>拉黑缓存（只读，权威在服务侧）</label><span class="muted" id="bl-synced">尚未同步</span></div><div id="bl-list" style="max-height:130px;overflow:auto;font-size:13px;line-height:1.6;background:#fbfcff;border:1px solid #e4e7f2;border-radius:8px;padding:8px"></div></div>
 <div class="card"><h2>机器人能力</h2><p class="muted">以下能力独立于上方「启用自动回复」总开关，默认全部关闭。</p><div class="row"><label><input type="checkbox" id="at-reply"> 群聊回复时 @ 触发者</label></div><div class="row"><label><input type="checkbox" id="gw-enabled"> 入群欢迎</label><label>模板</label><input type="text" id="gw-template" class="w-reply" placeholder="欢迎 {user_id} 加入本群！支持 {group_id}、{user_id}"></div><div class="row"><label><input type="checkbox" id="fr-autoaccept"> 自动通过好友申请</label><span class="muted">高风险，建议仅小号开启</span></div></div>
 <div class="row"><button id="save">保存配置</button></div>
@@ -233,16 +243,36 @@ function toast(msg, err){ var d=document.createElement('div'); d.className='toas
 function el(id){ return document.getElementById(id); }
 function esc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 function replyPoolText(k){ return (k && k.replies && k.replies.length) ? k.replies.join('|||') : ((k && k.reply) || ''); }
+function actionSelect(cls, action){
+  var a = action || 'reply';
+  var opts = [['reply','回固定文案'],['ai','直接问 AI'],['human','转人工']];
+  var html = '';
+  opts.forEach(function(o){ html += '<option value="' + o[0] + '"' + (a === o[0] ? ' selected' : '') + '>' + o[1] + '</option>'; });
+  return '<select class="' + cls + '">' + html + '</select>';
+}
+function typeSelect(cls, type){
+  return '<select class="' + cls + '"><option value="contains"' + (type==='prefix'||type==='regex'?'':' selected') + '>包含</option><option value="prefix"' + (type==='prefix'?' selected':'') + '>前缀</option><option value="regex"' + (type==='regex'?' selected':'') + '>正则</option></select>';
+}
 function rowHtml(k, i){
-  var type = k.matchType || 'contains';
-  var sel = '<select class="kw-type"><option value="contains"' + (type==='prefix'||type==='regex'?'':' selected') + '>包含</option><option value="prefix"' + (type==='prefix'?' selected':'') + '>前缀</option><option value="regex"' + (type==='regex'?' selected':'') + '>正则</option></select>';
-  return '<div class="kw" data-i="' + i + '"><input type="text" class="kw-match w-match" value="' + esc(k.match) + '" placeholder="匹配词/正则">' + sel + '<input type="text" class="kw-reply w-reply" value="' + esc(replyPoolText(k)) + '" placeholder="回复话术（多条用 ||| 分隔）"><label class="muted" style="white-space:nowrap"><input type="checkbox" class="kw-ai"' + (k.aiFallback ? ' checked' : '') + '> 允许升级 AI</label><input type="text" class="kw-img w-match" value="' + esc(k.image || '') + '" placeholder="图片URL/路径(可选)"><button class="danger kw-del">删除</button></div>';
+  return '<div class="kw" data-i="' + i + '"><input type="text" class="kw-match w-match" value="' + esc(k.match) + '" placeholder="匹配词/正则">' + typeSelect('kw-type', k.matchType || 'contains') + '<input type="text" class="kw-reply w-reply" value="' + esc(replyPoolText(k)) + '" placeholder="回复话术（多条用 ||| 分隔）">' + actionSelect('kw-action', k.action) + '<label class="muted" style="white-space:nowrap"><input type="checkbox" class="kw-ai"' + (k.aiFallback ? ' checked' : '') + '> 先问 AI 再回文案</label><input type="text" class="kw-img w-match" value="' + esc(k.image || '') + '" placeholder="图片URL/路径(可选)"><button class="danger kw-del">删除</button></div>';
 }
 function groupKwRowHtml(k){
   k = k || {};
-  var type = k.matchType || 'contains';
-  var sel = '<select class="gkw-type"><option value="contains"' + (type==='prefix'||type==='regex'?'':' selected') + '>包含</option><option value="prefix"' + (type==='prefix'?' selected':'') + '>前缀</option><option value="regex"' + (type==='regex'?' selected':'') + '>正则</option></select>';
-  return '<div class="gkw"><input type="text" class="gkw-match w-match" value="' + esc(k.match) + '" placeholder="匹配词/正则">' + sel + '<input type="text" class="gkw-reply w-reply" value="' + esc(replyPoolText(k)) + '" placeholder="回复话术（多条用 ||| 分隔）"><label class="muted" style="white-space:nowrap"><input type="checkbox" class="gkw-ai"' + (k.aiFallback ? ' checked' : '') + '> 允许升级 AI</label><input type="text" class="gkw-img w-match" value="' + esc(k.image || '') + '" placeholder="图片URL/路径(可选)"><button class="danger gkw-del">删除</button></div>';
+  return '<div class="gkw"><input type="text" class="gkw-match w-match" value="' + esc(k.match) + '" placeholder="匹配词/正则">' + typeSelect('gkw-type', k.matchType || 'contains') + '<input type="text" class="gkw-reply w-reply" value="' + esc(replyPoolText(k)) + '" placeholder="回复话术（多条用 ||| 分隔）">' + actionSelect('gkw-action', k.action) + '<label class="muted" style="white-space:nowrap"><input type="checkbox" class="gkw-ai"' + (k.aiFallback ? ' checked' : '') + '> 先问 AI 再回文案</label><input type="text" class="gkw-img w-match" value="' + esc(k.image || '') + '" placeholder="图片URL/路径(可选)"><button class="danger gkw-del">删除</button></div>';
+}
+function policyLine(gid, rule){
+  var p = (cfg && cfg.groupPolicies && cfg.groupPolicies[gid]) || null;
+  var enabled, enabledSrc, atOnly, atOnlySrc, ai, aiSrc;
+  if (p) {
+    enabled = p.enabled.value; enabledSrc = p.enabled.source === 'group' ? '群级' : '全局';
+    atOnly = p.atOnly.value; atOnlySrc = p.atOnly.source === 'group' ? '群级' : '全局';
+    ai = p.aiEnabled.value; aiSrc = p.aiEnabled.source === 'group' ? '群级' : '全局';
+  } else {
+    enabled = rule && rule.enabled != null ? rule.enabled : true; enabledSrc = rule && rule.enabled != null ? '群级' : '全局';
+    atOnly = rule && rule.atOnly != null ? rule.atOnly : !!(cfg && cfg.atOnly); atOnlySrc = rule && rule.atOnly != null ? '群级' : '全局';
+    ai = rule && rule.aiEnabled != null ? rule.aiEnabled : true; aiSrc = rule && rule.aiEnabled != null ? '群级' : '全局';
+  }
+  return '<div class="policy">生效口径：启用=' + (enabled ? '是' : '否') + '（' + enabledSrc + '） · 仅@=' + (atOnly ? '是' : '否') + '（' + atOnlySrc + '） · AI=' + (ai ? '允许' : '禁止') + '（' + aiSrc + '）</div>';
 }
 function groupCardHtml(gid, rule){
   rule = rule || {};
@@ -253,7 +283,10 @@ function groupCardHtml(gid, rule){
   var welcomeMode = w.enabled === true ? 'on' : (w.enabled === false ? 'off' : '');
   var welcomeTpl = typeof w.template === 'string' ? w.template : '';
   var welcomeSel = '<select class="grp-welcome-mode"><option value=""' + (welcomeMode === '' ? ' selected' : '') + '>跟随全局</option><option value="on"' + (welcomeMode === 'on' ? ' selected' : '') + '>本群开启</option><option value="off"' + (welcomeMode === 'off' ? ' selected' : '') + '>本群关闭</option></select>';
-  return '<div class="grp" data-gid="' + esc(gid) + '"><div class="grp-head"><span class="grp-id">群 ' + esc(gid) + '</span><label><input type="checkbox" class="grp-enabled"' + (rule.enabled !== false ? ' checked' : '') + '> 启用本群自动回复</label><label><input type="checkbox" class="grp-atonly"' + (atOnly ? ' checked' : '') + '> 仅 @ 时回复</label><label><input type="checkbox" class="grp-ai"' + (rule.aiEnabled !== false ? ' checked' : '') + '> 允许 AI 升级</label><button class="danger grp-del">删除群规则</button></div><div class="row grp-welcome"><label>入群欢迎</label>' + welcomeSel + '<input type="text" class="grp-welcome-tpl w-reply" value="' + esc(welcomeTpl) + '" placeholder="欢迎模板，留空跟随全局（支持 {user_id}、{group_id}）"></div><p class="muted">本群专属关键词（留空沿用全局关键词；有内容则只按本群关键词匹配；回复多条用 ||| 分隔）</p><div class="gkw-list">' + kwHtml + '</div><div class="row"><button class="gray grp-kw-add">+ 添加匹配词</button></div></div>';
+  var fb = rule.fallback || {};
+  var fbPrivate = typeof fb.privateText === 'string' ? fb.privateText : '';
+  var fbGroupAt = typeof fb.groupAtText === 'string' ? fb.groupAtText : '';
+  return '<div class="grp" data-gid="' + esc(gid) + '"><div class="grp-head"><span class="grp-id">群 ' + esc(gid) + '</span><label><input type="checkbox" class="grp-enabled"' + (rule.enabled !== false ? ' checked' : '') + '> 启用本群自动回复</label><label><input type="checkbox" class="grp-atonly"' + (atOnly ? ' checked' : '') + '> 仅 @ 时回复</label><label><input type="checkbox" class="grp-ai"' + (rule.aiEnabled !== false ? ' checked' : '') + '> 允许 AI 升级</label><button class="danger grp-del">删除群规则</button></div>' + policyLine(gid, rule) + '<div class="row grp-fallback"><label>兜底话术</label><input type="text" class="grp-fb-private w-reply" value="' + esc(fbPrivate) + '" placeholder="私聊兜底（留空跟随全局）"><input type="text" class="grp-fb-group w-reply" value="' + esc(fbGroupAt) + '" placeholder="群@兜底（留空跟随全局）"></div><div class="row grp-welcome"><label>入群欢迎</label>' + welcomeSel + '<input type="text" class="grp-welcome-tpl w-reply" value="' + esc(welcomeTpl) + '" placeholder="欢迎模板，留空跟随全局（支持 {user_id}、{group_id}）"></div><p class="muted">本群专属关键词（留空沿用全局关键词；有内容则只按本群关键词匹配；回复多条用 ||| 分隔）</p><div class="gkw-list">' + kwHtml + '</div><div class="row"><button class="gray grp-kw-add">+ 添加匹配词</button></div></div>';
 }
 function refreshGrpEmpty(){
   el('grp-empty').style.display = document.querySelectorAll('#grp-list .grp').length ? 'none' : '';
@@ -295,13 +328,19 @@ function renderBlocklist(){
 function render(){
   el('enabled').checked = !!cfg.enabled;
   el('pv-enabled').checked = !!(cfg.private && cfg.private.enabled);
-  el('pv-default').value = (cfg.private && cfg.private.defaultReply) || '';
   el('gr-enabled').checked = !!(cfg.group && cfg.group.enabled);
   el('gr-atonly').checked = !!cfg.atOnly;
   el('at-reply').checked = !!cfg.atReply;
   el('gw-enabled').checked = !!(cfg.groupWelcome && cfg.groupWelcome.enabled);
   el('gw-template').value = (cfg.groupWelcome && cfg.groupWelcome.template) || '';
   el('fr-autoaccept').checked = !!(cfg.friendRequest && cfg.friendRequest.autoAccept);
+  var fb = cfg.fallback || {};
+  el('fb-private').value = fb.privateText != null ? fb.privateText : '';
+  el('fb-group-at').value = fb.groupAtText != null ? fb.groupAtText : '';
+  var collect = cfg.collect || {};
+  el('collect-enabled').checked = !!collect.enabled;
+  el('collect-questions').value = Array.isArray(collect.questions) ? collect.questions.join(String.fromCharCode(10)) : '';
+  el('relay-token').value = (cfg.relay && cfg.relay.token) || '';
   el('cooldown').value = cfg.cooldownSeconds != null ? cfg.cooldownSeconds : 30;
   el('delay-min').value = cfg.replyDelayMinMs != null ? cfg.replyDelayMinMs : 300;
   el('delay-max').value = cfg.replyDelayMaxMs != null ? cfg.replyDelayMaxMs : 1200;
@@ -329,12 +368,13 @@ function collect(){
     var m = row.querySelector('.kw-match').value.trim();
     var t = row.querySelector('.kw-type').value;
     var rep = row.querySelector('.kw-reply').value.trim();
+    var act = row.querySelector('.kw-action').value;
     var img = row.querySelector('.kw-img').value.trim();
     var ai = !!row.querySelector('.kw-ai').checked;
     var pool = rep.split('|||').map(function(s){ return s.trim(); }).filter(Boolean);
-    if (!m || (!pool.length && !img)) return;
+    if (!m || (act !== 'ai' && !pool.length && !img)) return;
     if (t === 'regex') { try { new RegExp(m); } catch(e){ throw new Error('正则无效: ' + m); } }
-    var kw = { match: m, matchType: t, reply: pool[0] || '' };
+    var kw = { match: m, matchType: t, reply: pool[0] || '', action: act };
     if (pool.length > 1) kw.replies = pool;
     if (img) kw.image = img;
     if (ai) kw.aiFallback = true;
@@ -345,11 +385,24 @@ function collect(){
   var next = Object.assign({}, cfg, {
     enabled: el('enabled').checked,
     keywords: keywords,
-    keywordsText: keywords.map(function(k){ return k.match + '|' + k.matchType + '|' + k.reply + (k.image ? '|' + k.image : (k.aiFallback ? '|' : '')) + (k.aiFallback ? '|ai' : ''); }).join(String.fromCharCode(10)),
-    private: Object.assign({}, cfg.private, { enabled: el('pv-enabled').checked, defaultReply: el('pv-default').value.trim() }),
+    keywordsText: keywords.map(function(k){
+      var act = k.action && k.action !== 'reply' ? k.action : '';
+      var extra = [];
+      if (k.image) extra.push(k.image); else if (k.aiFallback || act) extra.push('');
+      if (k.aiFallback) extra.push('ai'); else if (act) extra.push('');
+      if (act) extra.push(act);
+      return k.match + '|' + k.matchType + '|' + k.reply + (extra.length ? '|' + extra.join('|') : '');
+    }).join(String.fromCharCode(10)),
+    private: Object.assign({}, cfg.private, { enabled: el('pv-enabled').checked }),
     group: Object.assign({}, cfg.group, { enabled: el('gr-enabled').checked }),
     atOnly: el('gr-atonly').checked,
     atReply: el('at-reply').checked,
+    fallback: { privateText: el('fb-private').value.trim(), groupAtText: el('fb-group-at').value.trim() },
+    collect: {
+      enabled: el('collect-enabled').checked,
+      questions: el('collect-questions').value.split(String.fromCharCode(10)).map(function(s){ return s.trim(); }).filter(Boolean)
+    },
+    relay: { token: el('relay-token').value.trim() },
     kbService: { enabled: el('kb-enabled').checked, baseUrl: el('kb-baseurl').value.trim(), token: el('kb-token').value.trim(), timeoutMs: Number(el('kb-timeout').value || 8000) },
     aiTrigger: { private: el('ai-private').checked, groupAtOnly: el('ai-group-atonly').checked },
     groupWelcome: Object.assign({}, cfg.groupWelcome, { enabled: el('gw-enabled').checked, template: el('gw-template').value.trim() }),
@@ -373,16 +426,18 @@ function collectGroupRules(){
       var m = row.querySelector('.gkw-match').value.trim();
       var t = row.querySelector('.gkw-type').value;
       var rep = row.querySelector('.gkw-reply').value.trim();
+      var act = row.querySelector('.gkw-action').value;
       var img = row.querySelector('.gkw-img').value.trim();
       var ai = !!row.querySelector('.gkw-ai').checked;
       var pool = rep.split('|||').map(function(s){ return s.trim(); }).filter(Boolean);
       if (!m && !rep) return;
-      if (!m || !pool.length) throw new Error('群 ' + gid + ' 的关键词和回复不能为空');
+      if (!m) throw new Error('群 ' + gid + ' 的关键词不能为空');
+      if (act !== 'ai' && !pool.length) throw new Error('群 ' + gid + ' 的回复不能为空（动作=直接问 AI 时可留空）');
       if (t === 'regex') {
         if (m.length > 300) throw new Error('群 ' + gid + ' 的正则过长（最多300字符）');
         try { new RegExp(m); } catch(e){ throw new Error('群 ' + gid + ' 正则无效: ' + m); }
       }
-      var gRule = { match: m, matchType: t, reply: pool[0] || '' };
+      var gRule = { match: m, matchType: t, reply: pool[0] || '', action: act };
       if (pool.length > 1) gRule.replies = pool;
       if (img) gRule.image = img;
       if (ai) gRule.aiFallback = true;
@@ -392,6 +447,9 @@ function collectGroupRules(){
     var wm = card.querySelector('.grp-welcome-mode').value;
     var wt = card.querySelector('.grp-welcome-tpl').value.trim();
     rule.welcome = { enabled: wm === 'on' ? true : (wm === 'off' ? false : null), template: wt || null };
+    var fbPrivate = card.querySelector('.grp-fb-private').value.trim();
+    var fbGroupAt = card.querySelector('.grp-fb-group').value.trim();
+    rule.fallback = { privateText: fbPrivate || null, groupAtText: fbGroupAt || null };
     if (keywords.length) rule.keywords = keywords;
     result[gid] = rule;
   });
@@ -457,5 +515,11 @@ function registerWebUI(ctx: NapCatPluginContext): void {
 // 不参与插件生命周期；NapCat 只读取上面约定的钩子。
 export { isBlocked, syncBlocklist, startBlocklistSync, stopBlocklistSync } from './core/blocklist';
 export { pickReply, planReply, resolveSend } from './core/escalation';
+export { isGroupConfigured, resolveGroupPolicy, resolveGroupFallback, buildGroupPolicies } from './core/policy';
+export { appendHandoffRecord } from './core/handoff';
+export { sendWithRetry } from './core/send-retry';
+export { beginCollect, clearCollect, collectKey, getCollect, stepCollect, COLLECT_TIMEOUT_MS } from './core/collect';
+export { keywordsToText, textToKeywords } from './config';
 export { resolveWelcome } from './handlers/event-handler';
-export { sanitizeConfig } from './core/state';
+export { handleMessage } from './handlers/message-handler';
+export { sanitizeConfig, pluginState } from './core/state';
