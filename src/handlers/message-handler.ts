@@ -6,9 +6,37 @@ import type { OB11Message } from 'napcat-types/napcat-onebot';
 import type { NapCatPluginContext } from 'napcat-types/napcat-onebot/network/plugin/types';
 import { pluginState } from '../core/state';
 import type { KeywordRule } from '../types';
+import fs from 'fs';
+import path from 'path';
 
 /** 私聊兜底回复在冷却记录中的规则键 */
 const DEFAULT_REPLY_RULE_KEY = 'default-reply';
+
+const CLAIM_DIR = '/root/qq-accounts/shared/claims';
+
+/** 多账号同群防重复:同一群同一条消息只允许一个实例回复(跨实例共享 claim 文件) */
+function tryClaimReply(messageId: string, groupId: string): boolean {
+    if (pluginState.config.crossAccountDedup === false) return true;
+    if (!messageId) return true;
+    try {
+        fs.mkdirSync(CLAIM_DIR, { recursive: true });
+        const file = path.join(CLAIM_DIR, groupId + "_" + messageId + ".claim");
+        const fd = fs.openSync(file, "wx");
+        try { fs.writeSync(fd, String(process.pid)); } finally { fs.closeSync(fd); }
+        // 顺带清理 10 分钟前的旧 claim,避免目录膨胀
+        try {
+            for (const f of fs.readdirSync(CLAIM_DIR)) {
+                const fp = path.join(CLAIM_DIR, f);
+                const st = fs.statSync(fp);
+                if (Date.now() - st.mtimeMs > 600000) fs.unlinkSync(fp);
+            }
+        } catch { /* 清理失败不影响主流程 */ }
+        return true;
+    } catch (e) {
+        // EEXIST = 其他账号已抢先回复
+        return (e as any)?.code !== "EEXIST";
+    }
+}
 
 export async function handleMessage(ctx: NapCatPluginContext, event: OB11Message): Promise<void> {
     const config = pluginState.config;
@@ -38,10 +66,10 @@ export async function handleMessage(ctx: NapCatPluginContext, event: OB11Message
         const hit = matchKeywords(config.keywords, text);
         if (hit) {
             if (!isOnCooldown(senderId, hit.match)) {
-                scheduleReply(ctx, event, hit.reply, '[私聊] ' + senderId);
+                scheduleReply(ctx, event, { text: hit.reply, image: hit.image }, '[私聊] ' + senderId);
             }
         } else if (config.private.defaultReply && !isOnCooldown(senderId, DEFAULT_REPLY_RULE_KEY)) {
-            scheduleReply(ctx, event, config.private.defaultReply, '[私聊] ' + senderId + ' 兜底');
+            scheduleReply(ctx, event, { text: config.private.defaultReply }, '[私聊] ' + senderId + ' 兜底');
         }
         return;
     }
@@ -59,8 +87,8 @@ export async function handleMessage(ctx: NapCatPluginContext, event: OB11Message
         // 群专属关键词非空时只按群规则匹配,避免全局规则串群
         const keywords = groupRule?.keywords?.length ? groupRule.keywords : config.keywords;
         const hit = matchKeywords(keywords, text);
-        if (hit && !isOnCooldown(senderId, hit.match)) {
-            scheduleReply(ctx, event, hit.reply, '[群聊] ' + groupId);
+        if (hit && !isOnCooldown(senderId, hit.match) && tryClaimReply(String(event.message_id ?? ''), groupId)) {
+            scheduleReply(ctx, event, { text: hit.reply, image: hit.image }, '[群聊] ' + groupId);
         }
     }
 }
@@ -108,31 +136,31 @@ function isAtSelf(event: OB11Message, selfId: string): boolean {
 }
 
 /** 按配置的随机延迟安排回复,拟人化防风控;延迟为 0 时立即发送 */
-function scheduleReply(ctx: NapCatPluginContext, event: OB11Message, text: string, logTag: string): void {
+function scheduleReply(ctx: NapCatPluginContext, event: OB11Message, content: { text: string; image?: string }, logTag: string): void {
     const min = Math.max(0, pluginState.config.replyDelayMinMs ?? 0);
     const max = Math.max(min, pluginState.config.replyDelayMaxMs ?? min);
     const delay = min + Math.floor(Math.random() * (max - min + 1));
     if (delay <= 0) {
-        void sendReply(ctx, event, text, logTag);
+        void sendReply(ctx, event, content, logTag);
         return;
     }
     const timer = setTimeout(() => {
         pluginState.pendingReplies.delete(timer);
-        void sendReply(ctx, event, text, logTag);
+        void sendReply(ctx, event, content, logTag);
     }, delay);
     pluginState.pendingReplies.add(timer);
 }
 
 /** 发送回复并记录日志,失败可定位不静默 */
-async function sendReply(ctx: NapCatPluginContext, event: OB11Message, text: string, logTag: string): Promise<void> {
+async function sendReply(ctx: NapCatPluginContext, event: OB11Message, content: { text: string; image?: string }, logTag: string): Promise<void> {
     try {
-        await replyMessage(ctx, event, text);
-        pluginState.logger.info(logTag + ' → ' + text.slice(0, 40));
+        await replyMessage(ctx, event, content);
+        const desc = (content.text || "") + (content.image ? " [图片]" : "");
+        pluginState.logger.info(logTag + " → " + desc.slice(0, 60));
     } catch (e) {
-        pluginState.logger.error(logTag + ' 回复发送失败:', e);
+        pluginState.logger.error(logTag + " 回复发送失败:", e);
     }
 }
-
 function checkWhitelist(list: (number | string)[], id: string): boolean {
     if (!list || list.length === 0) return true;
     return list.map(String).includes(id);
@@ -149,16 +177,38 @@ function extractText(event: OB11Message): string {
     return '';
 }
 
-async function replyMessage(ctx: NapCatPluginContext, event: OB11Message, text: string): Promise<void> {
-    const params: Record<string, unknown> = {
-        message: [{ type: 'text', data: { text } }],
-    };
-    if (event.message_type === 'group' && event.group_id) {
+/** 校验图片来源:允许 http(s)/base64://;本地路径限制在 /root 下且 <=5MB */
+function resolveImageSource(raw: string): string | null {
+    const src = String(raw || "").trim();
+    if (!src) return null;
+    if (/^(https?:\/\/|base64:\/\/)/i.test(src)) return src;
+    const local = src.startsWith("file://") ? src.slice(7) : src;
+    if (!local.startsWith("/root/")) {
+        pluginState.logger.warn("[图片] 本地图片必须位于 /root 下,已跳过: " + local);
+        return null;
+    }
+    try {
+        const st = fs.statSync(local);
+        if (!st.isFile() || st.size <= 0) return null;
+        if (st.size > 5 * 1024 * 1024) { pluginState.logger.warn("[图片] 超过 5MB,已跳过: " + local); return null; }
+        return local;
+    } catch { return null; }
+}
+async function replyMessage(ctx: NapCatPluginContext, event: OB11Message, content: { text: string; image?: string }): Promise<void> {
+    const segments: Array<Record<string, unknown>> = [];
+    if (content.text) segments.push({ type: "text", data: { text: content.text } });
+    if (content.image) {
+        const src = resolveImageSource(content.image);
+        if (src) segments.push({ type: "image", data: { file: src } });
+    }
+    if (!segments.length) return;
+    const params: Record<string, unknown> = { message: segments };
+    if (event.message_type === "group" && event.group_id) {
         params.group_id = String(event.group_id);
-        params.message_type = 'group';
+        params.message_type = "group";
     } else if (event.user_id) {
         params.user_id = String(event.user_id);
-        params.message_type = 'private';
+        params.message_type = "private";
     }
-    await ctx.actions.call('send_msg', params, ctx.adapterName, ctx.pluginManager.config);
+    await ctx.actions.call("send_msg", params, ctx.adapterName, ctx.pluginManager.config);
 }

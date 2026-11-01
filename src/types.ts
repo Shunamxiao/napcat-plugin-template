@@ -10,6 +10,8 @@ export interface KeywordRule {
     matchType?: "contains" | "prefix" | "regex";
     /** 回复内容 */
     reply: string;
+    /** 可选:随回复发送的图片(URL / base64://xxx / 容器内绝对路径) */
+    image?: string;
 }
 
 /** 私聊配置 */
@@ -62,6 +64,8 @@ export interface PluginConfig {
     groupConfigs: Record<string, GroupConfig>;
     /** 群级规则：键为群号，未配置的群沿用全局规则 */
     groupRules?: Record<string, GroupRule>;
+    /** 多账号同群时跨实例去重,避免重复回复(默认开启) */
+    crossAccountDedup?: boolean;
     /** WebUI 编辑用的多行文本形式(不参与消息匹配) */
     keywordsText?: string;
     /** 群级规则的 JSON 文本形式(供配置表单编辑，不参与消息匹配) */

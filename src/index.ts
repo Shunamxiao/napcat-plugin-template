@@ -195,6 +195,10 @@ textarea{width:100%;box-sizing:border-box;min-height:110px;padding:8px;border:1p
 button{border:0;border-radius:8px;padding:7px 14px;cursor:pointer;background:#4f6ef7;color:#fff;font-size:13px}
 button.gray{background:#8a8f9c}button.danger{background:#e5484d}
 .kw{display:flex;gap:8px;align-items:flex-start;padding:8px 0;border-bottom:1px dashed #eee}
+.grp{border:1px solid #e4e7f2;border-radius:10px;padding:10px 12px;margin:10px 0;background:#fbfcff}
+.grp-head{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+.grp-id{font-weight:600;font-size:14px;margin-right:auto}
+.gkw{display:flex;gap:8px;align-items:flex-start;padding:6px 0;border-bottom:1px dashed #eee}
 .tag{font-size:12px;padding:2px 8px;border-radius:6px;background:#eef;color:#345}
 .muted{color:#888;font-size:12px}
 .toast{position:fixed;top:14px;right:14px;background:#222;color:#fff;padding:10px 14px;border-radius:8px;font-size:13px;z-index:99}
@@ -205,7 +209,7 @@ button.gray{background:#8a8f9c}button.danger{background:#e5484d}
 <div class="card"><h2>私聊</h2><label><input type="checkbox" id="pv-enabled"> 私聊自动回复</label><div class="row"><label>兜底话术</label><input type="text" id="pv-default" class="w-reply" placeholder="未命中关键词时的回复，留空=不回复"></div></div>
 <div class="card"><h2>关键词规则</h2><p class="muted">每行一条：匹配词 + 类型（包含/前缀/正则）+ 回复话术。正则示例：^有.+ 或 下载|安装。</p><div id="kw-list"></div><div class="row"><button class="gray" id="kw-add">+ 添加规则</button></div></div>
 <div class="card"><h2>群聊</h2><div class="row"><label><input type="checkbox" id="gr-enabled"> 开启群消息自动回复</label><label><input type="checkbox" id="gr-atonly"> 仅被 @ 时回复</label></div><div class="row"><label>冷却（秒）</label><input type="number" id="cooldown" class="w-match" min="0"> <label>延迟(ms)</label><input type="number" id="delay-min" class="w-match" min="0"> ~ <input type="number" id="delay-max" class="w-match" min="0"></div><p class="muted">冷却：同一人触发同一规则的最短间隔；延迟：回复前随机等待，拟人防风控。</p></div>
-<div class="card"><h2>群级规则（可选）</h2><p class="muted">JSON：键为群号，值 {enabled, atOnly, keywords}。示例：{"597649304":{"enabled":true,"atOnly":false,"keywords":[{"match":"下载","matchType":"contains","reply":"去 apks.cc 搜"}]}}</p><textarea id="grules" spellcheck="false"></textarea></div>
+<div class="card"><h2>群级规则（可选）</h2><p class="muted">按群单独配置（仍受上方群聊总开关控制）：可关闭本群自动回复、设置仅 @ 时回复，或配置本群专属关键词。本群专属关键词留空时沿用全局关键词。</p><div id="grp-list"></div><p class="muted" id="grp-empty">尚未添加群级规则。</p><div class="row"><button class="gray" id="grp-add">+ 添加群规则</button></div><div class="row" id="grp-add-row" style="display:none"><input type="text" id="grp-new-id" class="w-match" inputmode="numeric" placeholder="群号（纯数字）"><button id="grp-add-confirm">确定添加</button><button class="gray" id="grp-add-cancel">取消</button></div></div>
 <div class="row"><button id="save">保存配置</button></div>
 <script>
 var cfg = null;
@@ -215,7 +219,41 @@ function esc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,
 function rowHtml(k, i){
   var type = k.matchType || 'contains';
   var sel = '<select class="kw-type"><option value="contains"' + (type==='prefix'||type==='regex'?'':' selected') + '>包含</option><option value="prefix"' + (type==='prefix'?' selected':'') + '>前缀</option><option value="regex"' + (type==='regex'?' selected':'') + '>正则</option></select>';
-  return '<div class="kw" data-i="' + i + '"><input type="text" class="kw-match w-match" value="' + esc(k.match) + '" placeholder="匹配词/正则">' + sel + '<input type="text" class="kw-reply w-reply" value="' + esc(k.reply) + '" placeholder="回复话术"><button class="danger kw-del">删除</button></div>';
+  return '<div class="kw" data-i="' + i + '"><input type="text" class="kw-match w-match" value="' + esc(k.match) + '" placeholder="匹配词/正则">' + sel + '<input type="text" class="kw-reply w-reply" value="' + esc(k.reply) + '" placeholder="回复话术"><input type="text" class="kw-img w-match" value="' + esc(k.image || '') + '" placeholder="图片URL/路径(可选)"><button class="danger kw-del">删除</button></div>';
+}
+function groupKwRowHtml(k){
+  k = k || {};
+  var type = k.matchType || 'contains';
+  var sel = '<select class="gkw-type"><option value="contains"' + (type==='prefix'||type==='regex'?'':' selected') + '>包含</option><option value="prefix"' + (type==='prefix'?' selected':'') + '>前缀</option><option value="regex"' + (type==='regex'?' selected':'') + '>正则</option></select>';
+  return '<div class="gkw"><input type="text" class="gkw-match w-match" value="' + esc(k.match) + '" placeholder="匹配词/正则">' + sel + '<input type="text" class="gkw-reply w-reply" value="' + esc(k.reply) + '" placeholder="回复话术"><input type="text" class="gkw-img w-match" value="' + esc(k.image || '') + '" placeholder="图片URL/路径(可选)"><button class="danger gkw-del">删除</button></div>';
+}
+function groupCardHtml(gid, rule){
+  rule = rule || {};
+  var atOnly = rule.atOnly != null ? !!rule.atOnly : !!(cfg && cfg.atOnly);
+  var kwHtml = (Array.isArray(rule.keywords) ? rule.keywords : []).map(groupKwRowHtml).join('');
+  if (!kwHtml) kwHtml = '<p class="muted grp-kw-empty">本群暂无专属关键词，沿用全局关键词。</p>';
+  return '<div class="grp" data-gid="' + esc(gid) + '"><div class="grp-head"><span class="grp-id">群 ' + esc(gid) + '</span><label><input type="checkbox" class="grp-enabled"' + (rule.enabled !== false ? ' checked' : '') + '> 启用本群自动回复</label><label><input type="checkbox" class="grp-atonly"' + (atOnly ? ' checked' : '') + '> 仅 @ 时回复</label><button class="danger grp-del">删除群规则</button></div><p class="muted">本群专属关键词（留空沿用全局关键词；有内容则只按本群关键词匹配）</p><div class="gkw-list">' + kwHtml + '</div><div class="row"><button class="gray grp-kw-add">+ 添加匹配词</button></div></div>';
+}
+function refreshGrpEmpty(){
+  el('grp-empty').style.display = document.querySelectorAll('#grp-list .grp').length ? 'none' : '';
+}
+function renderGroupRules(){
+  var rules = (cfg && cfg.groupRules) || {};
+  var host = el('grp-list'); host.innerHTML = '';
+  Object.keys(rules).forEach(function(gid){ host.insertAdjacentHTML('beforeend', groupCardHtml(gid, rules[gid])); });
+  refreshGrpEmpty();
+}
+function addGroupRule(){
+  var input = el('grp-new-id');
+  var gid = input.value.trim();
+  if (!/^\d+$/.test(gid)) { toast('群号必须为数字', true); input.focus(); return; }
+  var exists = [].slice.call(document.querySelectorAll('#grp-list .grp')).some(function(card){ return card.getAttribute('data-gid') === gid; });
+  if (exists) { toast('群号已存在: ' + gid, true); input.focus(); return; }
+  el('grp-list').insertAdjacentHTML('beforeend', groupCardHtml(gid, { enabled: true }));
+  input.value = '';
+  el('grp-add-row').style.display = 'none';
+  refreshGrpEmpty();
+  toast('已添加群 ' + gid + '，保存后生效');
 }
 function renderKeywords(){
   var host = el('kw-list'); host.innerHTML = '';
@@ -230,7 +268,7 @@ function render(){
   el('cooldown').value = cfg.cooldownSeconds != null ? cfg.cooldownSeconds : 30;
   el('delay-min').value = cfg.replyDelayMinMs != null ? cfg.replyDelayMinMs : 300;
   el('delay-max').value = cfg.replyDelayMaxMs != null ? cfg.replyDelayMaxMs : 1200;
-  el('grules').value = JSON.stringify(cfg.groupRules || {}, null, 2);
+  renderGroupRules();
   renderKeywords();
 }
 async function load(){
@@ -244,17 +282,17 @@ function collect(){
     var m = row.querySelector('.kw-match').value.trim();
     var t = row.querySelector('.kw-type').value;
     var rep = row.querySelector('.kw-reply').value.trim();
-    if (!m || !rep) return;
+    var img = row.querySelector('.kw-img').value.trim();
+    if (!m || (!rep && !img)) return;
     if (t === 'regex') { try { new RegExp(m); } catch(e){ throw new Error('正则无效: ' + m); } }
     keywords.push({ match: m, matchType: t, reply: rep });
   });
   if (!keywords.length) throw new Error('至少保留一条关键词规则');
-  var grules = {};
-  try { grules = JSON.parse(el('grules').value || '{}'); } catch(e){ throw new Error('群级规则 JSON 无效'); }
+  var grules = collectGroupRules();
   var next = Object.assign({}, cfg, {
     enabled: el('enabled').checked,
     keywords: keywords,
-    keywordsText: keywords.map(function(k){ return k.match + '|' + k.matchType + '|' + k.reply; }).join(String.fromCharCode(10)),
+    keywordsText: keywords.map(function(k){ return k.match + '|' + k.matchType + '|' + k.reply + (k.image ? '|' + k.image : ''); }).join(String.fromCharCode(10)),
     private: Object.assign({}, cfg.private, { enabled: el('pv-enabled').checked, defaultReply: el('pv-default').value.trim() }),
     group: Object.assign({}, cfg.group, { enabled: el('gr-enabled').checked }),
     atOnly: el('gr-atonly').checked,
@@ -265,6 +303,34 @@ function collect(){
   });
   delete next.groupRulesText;
   return next;
+}
+function collectGroupRules(){
+  var result = {};
+  [].slice.call(document.querySelectorAll('#grp-list .grp')).forEach(function(card){
+    var gid = (card.getAttribute('data-gid') || '').trim();
+    if (!/^\d+$/.test(gid)) throw new Error('群号必须为数字: ' + gid);
+    if (Object.prototype.hasOwnProperty.call(result, gid)) throw new Error('群号重复: ' + gid);
+    var keywords = [];
+    [].slice.call(card.querySelectorAll('.gkw')).forEach(function(row){
+      var m = row.querySelector('.gkw-match').value.trim();
+      var t = row.querySelector('.gkw-type').value;
+      var rep = row.querySelector('.gkw-reply').value.trim();
+      var img = row.querySelector('.gkw-img').value.trim();
+      if (!m && !rep) return;
+      if (!m || !rep) throw new Error('群 ' + gid + ' 的关键词和回复不能为空');
+      if (t === 'regex') {
+        if (m.length > 300) throw new Error('群 ' + gid + ' 的正则过长（最多300字符）');
+        try { new RegExp(m); } catch(e){ throw new Error('群 ' + gid + ' 正则无效: ' + m); }
+      }
+      var gRule = { match: m, matchType: t, reply: rep };
+      if (img) gRule.image = img;
+      keywords.push(gRule);
+    });
+    var rule = { enabled: card.querySelector('.grp-enabled').checked, atOnly: card.querySelector('.grp-atonly').checked };
+    if (keywords.length) rule.keywords = keywords;
+    result[gid] = rule;
+  });
+  return result;
 }
 async function save(){
   try {
@@ -280,7 +346,14 @@ el('save').addEventListener('click', save);
 document.addEventListener('click', function(e){
   if (e.target.classList.contains('kw-del')) { var row=e.target.closest('.kw'); var i=Number(row.getAttribute('data-i')); cfg.keywords.splice(i,1); renderKeywords(); }
   if (e.target.id === 'kw-add') { cfg.keywords = cfg.keywords || []; cfg.keywords.push({ match:'', matchType:'contains', reply:'' }); renderKeywords(); }
+  if (e.target.id === 'grp-add') { el('grp-add-row').style.display = 'flex'; el('grp-new-id').focus(); }
+  if (e.target.id === 'grp-add-confirm') addGroupRule();
+  if (e.target.id === 'grp-add-cancel') { el('grp-new-id').value = ''; el('grp-add-row').style.display = 'none'; }
+  if (e.target.classList.contains('grp-del')) { var gc=e.target.closest('.grp'); var gid=gc.getAttribute('data-gid'); gc.remove(); refreshGrpEmpty(); toast('已删除群 ' + gid + ' 规则，保存后生效'); }
+  if (e.target.classList.contains('grp-kw-add')) { var card=e.target.closest('.grp'); var empty=card.querySelector('.grp-kw-empty'); if (empty) empty.remove(); card.querySelector('.gkw-list').insertAdjacentHTML('beforeend', groupKwRowHtml({})); }
+  if (e.target.classList.contains('gkw-del')) { var kwRow=e.target.closest('.gkw'); var gcard=e.target.closest('.grp'); kwRow.remove(); if (!gcard.querySelector('.gkw')) gcard.querySelector('.gkw-list').insertAdjacentHTML('beforeend', '<p class="muted grp-kw-empty">本群暂无专属关键词，沿用全局关键词。</p>'); }
 });
+el('grp-new-id').addEventListener('keydown', function(e){ if (e.key === 'Enter') { e.preventDefault(); addGroupRule(); } });
 load();
 </script></body></html>`;
 

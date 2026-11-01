@@ -27,7 +27,9 @@ function sanitizeKeywordRule(raw: unknown): KeywordRule | null {
     if (!isObject(raw)) return null;
     if (typeof raw.match !== 'string' || typeof raw.reply !== 'string') return null;
     if (!raw.match.trim() || !raw.reply.trim()) return null;
-    return { match: raw.match, matchType: raw.matchType === 'prefix' ? 'prefix' : raw.matchType === 'regex' ? 'regex' : 'contains', reply: raw.reply };
+    const rule: KeywordRule = { match: raw.match, matchType: raw.matchType === 'prefix' ? 'prefix' : raw.matchType === 'regex' ? 'regex' : 'contains', reply: String(raw.reply ?? '') };
+    if (typeof raw.image === 'string' && raw.image.trim()) rule.image = raw.image.trim();
+    return rule;
 }
 
 /** 清洗群级规则表:键为群号,逐字段校验,非法条目直接丢弃 */
@@ -63,6 +65,7 @@ export function sanitizeConfig(raw: unknown): PluginConfig {
     if (typeof raw.replyDelayMinMs === 'number' && raw.replyDelayMinMs >= 0) out.replyDelayMinMs = raw.replyDelayMinMs;
     if (typeof raw.replyDelayMaxMs === 'number' && raw.replyDelayMaxMs >= 0) out.replyDelayMaxMs = raw.replyDelayMaxMs;
     if (typeof raw.atOnly === 'boolean') out.atOnly = raw.atOnly;
+    if (typeof raw.crossAccountDedup === 'boolean') out.crossAccountDedup = raw.crossAccountDedup;
     if (typeof raw.keywordsText === 'string') out.keywordsText = raw.keywordsText;
     if (typeof raw.blacklistText === 'string') out.blacklistText = raw.blacklistText;
 
