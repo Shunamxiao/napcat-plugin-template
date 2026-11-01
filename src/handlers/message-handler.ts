@@ -9,7 +9,8 @@ import { isBlocked } from '../core/blocklist';
 import { pickReply, planReply, resolveSend, type Plan } from '../core/escalation';
 import { isGroupConfigured, resolveGroupFallback, resolveGroupPolicy } from '../core/policy';
 import { appendHandoffRecord } from '../core/handoff';
-import { sendWithRetry } from '../core/send-retry';
+import { classifySendError, sendWithRetry } from '../core/send-retry';
+import { SendGuard } from '../core/send-guard';
 import {
     beginCollect,
     clearCollect,
@@ -456,30 +457,90 @@ function scheduleReply(ctx: NapCatPluginContext, event: OB11Message, content: { 
     pluginState.pendingReplies.add(timer);
 }
 
-/** 发送回复并记录日志；群消息失败时记一条群维度告警并只重试一次 */
+/** 发送熔断单例：进程内按群/用户维度累计连续失败 */
+let sendGuard: SendGuard | null = null;
+function getSendGuard(): SendGuard {
+    if (!sendGuard) {
+        sendGuard = new SendGuard({
+            hooks: {
+                onRecover: (key) => pluginState.logger.info('[熔断] 恢复 ' + guardLabel(key) + '，重新尝试发送'),
+            },
+        });
+    }
+    return sendGuard;
+}
+
+function guardLabel(key: string): string {
+    const idx = key.indexOf(':');
+    const kind = key.slice(0, idx);
+    const id = key.slice(idx + 1);
+    return kind === 'group' ? '群 ' + id : '私聊 ' + id;
+}
+
+function errorMessage(error: unknown): string {
+    return error instanceof Error ? error.message : String(error ?? '');
+}
+
+/**
+ * 发送回复并记录日志。
+ * 防风控：熔断冷却期内不尝试发送；QQ 侧拒绝不重试；网络/超时类 2 秒后重试一次。
+ */
 async function sendReply(ctx: NapCatPluginContext, event: OB11Message, content: { text: string; image?: string }, logTag: string): Promise<void> {
     const isGroup = event.message_type === 'group' && !!event.group_id;
-    const groupId = String(event.group_id ?? '');
+    const targetId = isGroup
+        ? String(event.group_id ?? '')
+        : String(event.sender?.user_id ?? event.user_id ?? '');
+    const key = (isGroup ? 'group:' : 'private:') + (targetId || 'unknown');
+    const guardCfg = pluginState.config.sendGuard ?? { failThreshold: 3, privateFailThreshold: 5, cooldownSeconds: 600 };
+    const threshold = isGroup ? guardCfg.failThreshold : guardCfg.privateFailThreshold;
+    const cooldownMs = guardCfg.cooldownSeconds * 1000;
+    const guard = getSendGuard();
+
+    // 熔断中：消息算已处理但静默，不再尝试发送（不刷错误日志）
+    if (guard.isOpen(key)) {
+        pluginState.logger.debug('[熔断] ' + guardLabel(key) + ' 冷却中，本条静默');
+        return;
+    }
+
     const result = await sendWithRetry(
         () => replyMessage(ctx, event, content),
-        isGroup ? 2 : 1,
+        2,
         (error, attempt) => {
-            // 只记一条群维度告警：首次失败即告警，重试结果另记一行
-            if (isGroup && attempt === 1) {
-                pluginState.logger.error('[告警][群 ' + groupId + '] 回复发送失败，重试一次:', error);
+            if (attempt === 1 && classifySendError(error) === 'network') {
+                pluginState.logger.warn('[发送] ' + guardLabel(key) + ' 网络/超时，2 秒后重试一次: ' + errorMessage(error));
             }
         },
+        { shouldRetry: (error) => classifySendError(error) === 'network' },
     );
     if (result.ok) {
+        guard.onSuccess(key);
         const desc = (content.text || "") + (content.image ? " [图片]" : "");
         pluginState.logger.info(logTag + (result.attempts > 1 ? "（重试后成功）" : "") + " → " + desc.slice(0, 60));
         return;
     }
-    if (isGroup) {
-        pluginState.logger.error('[告警][群 ' + groupId + '] 重试后仍发送失败:', result.errors[result.errors.length - 1]);
+
+    const kind = result.kind ?? classifySendError(result.errors[result.errors.length - 1]);
+    const failure = guard.onFailure(key, threshold, cooldownMs);
+    if (failure.opened) {
+        pluginState.logger.error(
+            '[熔断] ' + guardLabel(key) + ' 连续 ' + failure.failures + ' 次发送失败' +
+            (kind === 'qq_reject' ? '（QQ 侧拒绝）' : '') +
+            '，冷却 ' + guardCfg.cooldownSeconds + ' 秒: ' + errorMessage(result.errors[result.errors.length - 1]),
+        );
         return;
     }
-    pluginState.logger.error(logTag + " 回复发送失败:", result.errors[0]);
+    if (kind === 'qq_reject') {
+        // 不重试、不刷屏：逐条只记 debug，达到阈值时才有一条 [熔断]
+        pluginState.logger.debug(
+            '[发送] ' + guardLabel(key) + ' QQ 侧拒绝，不重试（连续 ' + failure.failures + '/' + threshold + '）: ' +
+            errorMessage(result.errors[result.errors.length - 1]),
+        );
+        return;
+    }
+    pluginState.logger.error(
+        '[发送] ' + guardLabel(key) + ' 重试后仍失败（连续 ' + failure.failures + '/' + threshold + '）: ' +
+        errorMessage(result.errors[result.errors.length - 1]),
+    );
 }
 function checkWhitelist(list: (number | string)[], id: string): boolean {
     if (!list || list.length === 0) return true;

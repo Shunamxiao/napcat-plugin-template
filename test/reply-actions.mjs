@@ -26,11 +26,14 @@ import {
   keywordsToText,
   notifyHandoff,
   planReply,
+  SendGuard,
+  sendWithRetry,
+  classifySendError,
+  MIN_RETRY_DELAY_MS,
   resolveGroupFallback,
   resolveGroupPolicy,
   resolveSend,
   sanitizeConfig,
-  sendWithRetry,
   stepCollect,
   textToKeywords,
 } from "../dist/index.mjs";
@@ -155,23 +158,92 @@ test("群级兜底覆盖：字符串覆盖、null 跟随全局", () => {
 });
 
 test("发送失败只重试一次", async () => {
+  const sleeps = [];
   let calls = 0;
   const flaky = await sendWithRetry(async () => {
     calls++;
-    if (calls === 1) throw new Error("EventChecker Failed");
-  }, 5);
+    if (calls === 1) throw new Error("ETIMEDOUT");
+  }, 5, undefined, { sleep: async (ms) => sleeps.push(ms) });
   assert.equal(calls, 2);
   assert.equal(flaky.ok, true);
   assert.equal(flaky.attempts, 2);
+  assert.deepEqual(sleeps, [MIN_RETRY_DELAY_MS], "重试间隔不少于 2 秒");
 
   let always = 0;
   const failed = await sendWithRetry(async () => {
     always++;
-    throw new Error("EventChecker Failed");
-  }, 5);
-  assert.equal(always, 2);
+    throw new Error("ETIMEDOUT");
+  }, 5, undefined, { sleep: async () => {} });
+  assert.equal(always, 2, "网络错误最多重试一次，禁止循环打接口");
   assert.equal(failed.ok, false);
   assert.equal(failed.attempts, 2);
+});
+
+test("失败分型：QQ 侧拒绝不重试，网络错误重试一次", async () => {
+  const sleeps = [];
+  const qqError = new Error("Action send_msg failed: EventChecker Failed: NTEvent ... EventRet: result:120");
+  assert.equal(classifySendError(qqError), "qq_reject");
+  let qqCalls = 0;
+  const qq = await sendWithRetry(async () => {
+    qqCalls++;
+    throw qqError;
+  }, 2, undefined, {
+    shouldRetry: (e) => classifySendError(e) === "network",
+    sleep: async (ms) => sleeps.push(ms),
+  });
+  assert.equal(qqCalls, 1, "QQ 侧拒绝不得重试");
+  assert.equal(qq.attempts, 1);
+  assert.equal(qq.kind, "qq_reject");
+  assert.equal(sleeps.length, 0);
+
+  let netCalls = 0;
+  const net = await sendWithRetry(async () => {
+    netCalls++;
+    throw new Error("socket hang up");
+  }, 2, undefined, {
+    shouldRetry: (e) => classifySendError(e) === "network",
+    sleep: async (ms) => sleeps.push(ms),
+  });
+  assert.equal(netCalls, 2, "网络错误重试一次");
+  assert.equal(net.ok, false);
+  assert.equal(net.kind, "network");
+  assert.deepEqual(sleeps, [2000]);
+});
+
+test("熔断：达阈值进入冷却、成功清零、到期恢复", async () => {
+  let now = 10_000;
+  const events = [];
+  const guard = new SendGuard({
+    now: () => now,
+    hooks: {
+      onOpen: (key, failures, cooldownMs) => events.push(["open", key, failures, cooldownMs]),
+      onRecover: (key) => events.push(["recover", key]),
+    },
+  });
+  const key = "group:480563774";
+  assert.equal(guard.isOpen(key), false);
+  assert.equal(guard.onFailure(key, 3, 60_000).opened, false);
+  assert.equal(guard.onFailure(key, 3, 60_000).opened, false);
+  const third = guard.onFailure(key, 3, 60_000);
+  assert.equal(third.opened, true);
+  assert.equal(third.failures, 3);
+  assert.equal(guard.isOpen(key), true, "冷却期内不再发送");
+  assert.deepEqual(events, [["open", key, 3, 60_000]]);
+
+  // 冷却到期自动恢复，且只回调一次
+  now += 60_000;
+  assert.equal(guard.isOpen(key), false);
+  assert.deepEqual(events[1], ["recover", key]);
+  assert.equal(guard.failuresOf(key), 0);
+
+  // 成功一次清零连续失败计数
+  guard.onFailure(key, 3, 60_000);
+  guard.onFailure(key, 3, 60_000);
+  guard.onSuccess(key);
+  assert.equal(guard.failuresOf(key), 0);
+  assert.equal(guard.onFailure(key, 3, 60_000).opened, false, "清零后重新计数");
+  guard.reset();
+  assert.equal(guard.failuresOf(key), 0);
 });
 
 test("keywordsText 往返保留 action", () => {
@@ -213,6 +285,7 @@ test("collect/relay 配置缺省值：关闭追问、无题、relay 令牌为空
   const cfg = sanitizeConfig({});
   assert.deepEqual(cfg.collect, { enabled: false, questions: [] });
   assert.deepEqual(cfg.relay, { token: "" });
+  assert.deepEqual(cfg.sendGuard, { failThreshold: 3, privateFailThreshold: 5, cooldownSeconds: 600 });
   assert.deepEqual(cfg.fallback, {
     privateText: "这个问题我拿不准，已经转给人工客服了，稍后回复你～",
     groupAtText: "这个问题我帮你转人工，稍后回复～",

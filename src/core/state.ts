@@ -200,6 +200,13 @@ export function sanitizeConfig(raw: unknown): PluginConfig {
             token: typeof raw.relay.token === 'string' ? raw.relay.token.trim() : out.relay.token,
         };
     }
+    if (isObject(raw.sendGuard)) {
+        out.sendGuard = {
+            failThreshold: clampInt(raw.sendGuard.failThreshold, 1, 100, out.sendGuard.failThreshold),
+            privateFailThreshold: clampInt(raw.sendGuard.privateFailThreshold, 1, 100, out.sendGuard.privateFailThreshold),
+            cooldownSeconds: clampInt(raw.sendGuard.cooldownSeconds, 1, 86400, out.sendGuard.cooldownSeconds),
+        };
+    }
     if (typeof raw.crossAccountDedup === 'boolean') out.crossAccountDedup = raw.crossAccountDedup;
     if (typeof raw.keywordsText === 'string') out.keywordsText = raw.keywordsText;
     if (typeof raw.blacklistText === 'string') out.blacklistText = raw.blacklistText;
@@ -493,6 +500,7 @@ class PluginState {
         }
         if (partial.collect) merged.collect = { ...this.config.collect, ...partial.collect };
         if (partial.relay) merged.relay = { ...this.config.relay, ...partial.relay };
+        if (partial.sendGuard) merged.sendGuard = { ...this.config.sendGuard, ...partial.sendGuard };
         // 群级规则文本:合法 JSON 才覆盖结构化规则,非法文本忽略
         if (typeof partial.groupRulesText === 'string') {
             const parsed = textToGroupRules(partial.groupRulesText);

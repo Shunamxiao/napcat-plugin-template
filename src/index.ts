@@ -174,6 +174,7 @@ export const plugin_set_config: PluginModule['plugin_set_config'] = async (ctx, 
     if (!cfg.collect) cfg.collect = pluginState.config.collect;
     else if (!Array.isArray(cfg.collect.questions)) cfg.collect.questions = pluginState.config.collect.questions;
     if (!cfg.relay) cfg.relay = pluginState.config.relay;
+    if (!cfg.sendGuard) cfg.sendGuard = pluginState.config.sendGuard;
 
     pluginState.replaceConfig(cfg);
     ctx.logger.info('配置已通过 WebUI 更新, 当前规则数:', Array.isArray(cfg.keywords) ? cfg.keywords.length : 0);
@@ -235,7 +236,7 @@ button.gray{background:#8a8f9c}button.danger{background:#e5484d}
 <div class="card"><h2>群聊</h2><div class="row"><label><input type="checkbox" id="gr-enabled"> 开启群消息自动回复</label><label><input type="checkbox" id="gr-atonly"> 仅被 @ 时回复</label></div><div class="row"><label>冷却（秒）</label><input type="number" id="cooldown" class="w-match" min="0"> <label>延迟(ms)</label><input type="number" id="delay-min" class="w-match" min="0"> ~ <input type="number" id="delay-max" class="w-match" min="0"></div><p class="muted">冷却：同一人触发同一规则的最短间隔；延迟：回复前随机等待，拟人防风控。</p></div>
 <div class="card"><h2>群级规则（可选）</h2><p class="muted">按群单独配置（仍受上方群聊总开关控制）。<b>只有列在下面的群才会被处理，未列出的群一律静默（即使被 @ 也不回）。</b>可关闭本群自动回复、设置仅 @ 时回复，或配置本群专属关键词。本群专属关键词留空时沿用全局关键词；回复多条用 ||| 分隔。</p><div id="grp-list"></div><p class="muted" id="grp-empty">尚未添加群级规则。</p><div class="row"><button class="gray" id="grp-add">+ 添加群规则</button></div><div class="row" id="grp-add-row" style="display:none"><input type="text" id="grp-new-id" class="w-match" inputmode="numeric" placeholder="群号（纯数字）"><button id="grp-add-confirm">确定添加</button><button class="gray" id="grp-add-cancel">取消</button></div></div>
 <div class="card"><h2>知识库 / AI</h2><p class="muted">开启后：未命中关键词的私聊/群消息会先问知识库服务；命中规则且勾选「允许升级 AI」时也先问服务，拿不到答案再退回规则话术。服务不可用时保持原有自动回复。</p><div class="row"><label><input type="checkbox" id="kb-enabled"> 启用知识库 / AI</label><label>超时(ms)</label><input type="number" id="kb-timeout" class="w-match" min="500" max="60000"></div><div class="row"><label>服务地址</label><input type="text" id="kb-baseurl" class="w-reply" placeholder="https://qqbot.theworld.codes"></div><div class="row"><label>访问令牌</label><input type="password" id="kb-token" class="w-reply" autocomplete="new-password" placeholder="x-bot-token（留空 = 不调用服务）"></div><div class="row"><label><input type="checkbox" id="ai-private"> 私聊未命中升级 AI</label><label><input type="checkbox" id="ai-group-atonly"> 群内仅 @ / 回复机器人时升级 AI</label></div><div class="row"><label>拉黑缓存（只读，权威在服务侧）</label><span class="muted" id="bl-synced">尚未同步</span></div><div id="bl-list" style="max-height:130px;overflow:auto;font-size:13px;line-height:1.6;background:#fbfcff;border:1px solid #e4e7f2;border-radius:8px;padding:8px"></div></div>
-<div class="card"><h2>机器人能力</h2><p class="muted">以下能力独立于上方「启用自动回复」总开关，默认全部关闭。</p><div class="row"><label><input type="checkbox" id="at-reply"> 群聊回复时 @ 触发者</label></div><div class="row"><label><input type="checkbox" id="gw-enabled"> 入群欢迎</label><label>模板</label><input type="text" id="gw-template" class="w-reply" placeholder="欢迎 {user_id} 加入本群！支持 {group_id}、{user_id}"></div><div class="row"><label><input type="checkbox" id="fr-autoaccept"> 自动通过好友申请</label><span class="muted">高风险，建议仅小号开启</span></div></div>
+<div class="card"><h2>机器人能力</h2><p class="muted">以下能力独立于上方「启用自动回复」总开关，默认全部关闭。</p><div class="row"><label><input type="checkbox" id="at-reply"> 群聊回复时 @ 触发者</label></div><div class="row"><label><input type="checkbox" id="gw-enabled"> 入群欢迎</label><label>模板</label><input type="text" id="gw-template" class="w-reply" placeholder="欢迎 {user_id} 加入本群！支持 {group_id}、{user_id}"></div><div class="row"><label>发送失败熔断：群</label><input type="number" id="sg-group" class="w-match" min="1" max="100"> 次 <label>私聊</label><input type="number" id="sg-private" class="w-match" min="1" max="100"> 次 <label>冷却(秒)</label><input type="number" id="sg-cooldown" class="w-match" min="1" max="86400"></div><p class="muted">同一群/同一用户连续发送失败达阈值即暂停发送，冷却结束自动恢复；QQ 侧拒绝不重试，网络/超时错误间隔 2 秒重试一次。</p><div class="row"><label><input type="checkbox" id="fr-autoaccept"> 自动通过好友申请</label><span class="muted">高风险，建议仅小号开启</span></div></div>
 <div class="row"><button id="save">保存配置</button></div>
 <script>
 var cfg = null;
@@ -334,6 +335,10 @@ function render(){
   el('gw-enabled').checked = !!(cfg.groupWelcome && cfg.groupWelcome.enabled);
   el('gw-template').value = (cfg.groupWelcome && cfg.groupWelcome.template) || '';
   el('fr-autoaccept').checked = !!(cfg.friendRequest && cfg.friendRequest.autoAccept);
+  var sg = cfg.sendGuard || {};
+  el('sg-group').value = sg.failThreshold != null ? sg.failThreshold : 3;
+  el('sg-private').value = sg.privateFailThreshold != null ? sg.privateFailThreshold : 5;
+  el('sg-cooldown').value = sg.cooldownSeconds != null ? sg.cooldownSeconds : 600;
   var fb = cfg.fallback || {};
   el('fb-private').value = fb.privateText != null ? fb.privateText : '';
   el('fb-group-at').value = fb.groupAtText != null ? fb.groupAtText : '';
@@ -403,6 +408,11 @@ function collect(){
       questions: el('collect-questions').value.split(String.fromCharCode(10)).map(function(s){ return s.trim(); }).filter(Boolean)
     },
     relay: { token: el('relay-token').value.trim() },
+    sendGuard: {
+      failThreshold: Number(el('sg-group').value || 3),
+      privateFailThreshold: Number(el('sg-private').value || 5),
+      cooldownSeconds: Number(el('sg-cooldown').value || 600)
+    },
     kbService: { enabled: el('kb-enabled').checked, baseUrl: el('kb-baseurl').value.trim(), token: el('kb-token').value.trim(), timeoutMs: Number(el('kb-timeout').value || 8000) },
     aiTrigger: { private: el('ai-private').checked, groupAtOnly: el('ai-group-atonly').checked },
     groupWelcome: Object.assign({}, cfg.groupWelcome, { enabled: el('gw-enabled').checked, template: el('gw-template').value.trim() }),
@@ -517,7 +527,8 @@ export { isBlocked, syncBlocklist, startBlocklistSync, stopBlocklistSync } from 
 export { pickReply, planReply, resolveSend } from './core/escalation';
 export { isGroupConfigured, resolveGroupPolicy, resolveGroupFallback, buildGroupPolicies } from './core/policy';
 export { appendHandoffRecord } from './core/handoff';
-export { sendWithRetry } from './core/send-retry';
+export { classifySendError, sendWithRetry, MIN_RETRY_DELAY_MS } from './core/send-retry';
+export { SendGuard } from './core/send-guard';
 export { beginCollect, clearCollect, collectKey, getCollect, stepCollect, COLLECT_TIMEOUT_MS } from './core/collect';
 export { keywordsToText, textToKeywords } from './config';
 export { resolveWelcome } from './handlers/event-handler';

@@ -79,6 +79,7 @@ export const DEFAULT_CONFIG: PluginConfig = {
     },
     collect: { enabled: false, questions: [] },
     relay: { token: "" },
+    sendGuard: { failThreshold: 3, privateFailThreshold: 5, cooldownSeconds: 600 },
     groupConfigs: {},
     groupRules: {},
     keywords: [
@@ -135,6 +136,9 @@ export function buildConfigSchema(ctx: NapCatPluginContext): PluginConfigSchema 
         ctx.NapCatConfig.boolean('atReply', '群聊回复时 @ 触发者', false, '开启后群聊自动回复会在消息前 @ 触发者；私聊不受影响'),
         ctx.NapCatConfig.boolean('groupWelcome.enabled', '入群欢迎', false, '新成员入群时发送欢迎语；独立于自动回复总开关'),
         ctx.NapCatConfig.text('groupWelcome.template', '入群欢迎模板', DEFAULT_CONFIG.groupWelcome?.template ?? '', '支持 {group_id} 和 {user_id} 占位符'),
+        ctx.NapCatConfig.number('sendGuard.failThreshold', '群发送失败熔断阈值(次)', 3, '同一群连续发送失败达到该次数即进入冷却，期间不再尝试发送（默认 3）'),
+        ctx.NapCatConfig.number('sendGuard.privateFailThreshold', '私聊发送失败熔断阈值(次)', 5, '同一用户私聊连续发送失败达到该次数即进入冷却（默认 5）'),
+        ctx.NapCatConfig.number('sendGuard.cooldownSeconds', '熔断冷却(秒)', 600, '熔断后暂停发送的时长，到期自动恢复（默认 600）'),
         ctx.NapCatConfig.text('fallback.privateText', '私聊兜底话术', DEFAULT_CONFIG.fallback.privateText, '私聊未命中关键词/FAQ 时必回这句；留空 = 不回'),
         ctx.NapCatConfig.text('fallback.groupAtText', '群内 @ 兜底话术', DEFAULT_CONFIG.fallback.groupAtText, '群内被 @ 但未命中关键词/FAQ 时必回这句；留空 = 不回'),
         ctx.NapCatConfig.boolean('collect.enabled', '转人工追问', false, '关键词动作=转人工时：关闭=直接回兜底；开启=按配置问题逐条追问，5 分钟未答按超时处理'),

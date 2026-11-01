@@ -86,14 +86,14 @@ const privateEvent = (text) => ({
   raw_message: text,
   message_id: nextMessageId(),
 });
-const groupEvent = (text, at) => {
+const groupEvent = (text, at, groupId = GID) => {
   const message = at
     ? [{ type: "at", data: { qq: SELF } }, { type: "text", data: { text: " " + text } }]
     : [{ type: "text", data: { text } }];
   return {
     post_type: "message",
     message_type: "group",
-    group_id: Number(GID),
+    group_id: Number(groupId),
     user_id: Number(OTHER),
     sender: { user_id: Number(OTHER) },
     message,
@@ -335,6 +335,110 @@ await wait(100);
 assert.equal(outbox.length, before + 1, "CQ 字符串形态的 @ 也要回复");
 assert.equal(textOf(outbox[outbox.length - 1]), "群@兜底话术");
 console.log("ok 11 - CQ 字符串 @ 判定兜底");
+
+// 12) 群发送连续失败达阈值 → 熔断，冷却期内不再调用 send_msg
+let sendCalls = 0;
+const realCall = ctx.actions.call;
+ctx.actions.call = async (action, params) => {
+  if (action === "send_msg") {
+    sendCalls++;
+    throw new Error("Action send_msg failed: EventChecker Failed: NTEvent ... EventRet: result:120");
+  }
+  return realCall(action, params);
+};
+const BREAK_GID = 555666777;
+pluginState.config = sanitizeConfig({
+  ...JSON.parse(fs.readFileSync(configPath, "utf-8")),
+  kbService: { enabled: false },
+  atReply: false,
+  sendGuard: { failThreshold: 3, privateFailThreshold: 5, cooldownSeconds: 600 },
+  groupRules: {
+    [BREAK_GID]: {
+      enabled: true,
+      atOnly: false,
+      aiEnabled: false,
+      keywords: [{ match: "在吗", reply: "在的", action: "reply" }],
+    },
+  },
+});
+pluginState.config.replyDelayMinMs = 0;
+pluginState.config.replyDelayMaxMs = 0;
+for (let i = 0; i < 3; i++) {
+  await handleMessage(ctx, groupEvent("在吗", true, BREAK_GID));
+  await wait(40);
+}
+assert.equal(sendCalls, 3, "阈值内每次都应尝试发送");
+const beforeSilent = sendCalls;
+await handleMessage(ctx, groupEvent("在吗", true, BREAK_GID));
+await wait(40);
+assert.equal(sendCalls, beforeSilent, "熔断后不得再调用 send_msg");
+ctx.actions.call = realCall;
+console.log("ok 12 - 连续 3 次失败后熔断且不再发送");
+
+// 13) 私聊带图：图文混合 segments 正确
+pluginState.config = sanitizeConfig({
+  ...JSON.parse(fs.readFileSync(configPath, "utf-8")),
+  kbService: { enabled: false },
+  private: { enabled: true, whitelist: [] },
+  keywords: [{ match: "下载", matchType: "contains", reply: "给你下载地址", action: "reply", image: "https://cdn.example/x.avif" }],
+});
+pluginState.config.replyDelayMinMs = 0;
+pluginState.config.replyDelayMaxMs = 0;
+before = outbox.length;
+await handleMessage(ctx, privateEvent("怎么下载"));
+await wait();
+assert.deepEqual(outbox[outbox.length - 1].message, [
+  { type: "text", data: { text: "给你下载地址" } },
+  { type: "image", data: { file: "https://cdn.example/x.avif" } },
+]);
+console.log("ok 13 - 私聊带图 segments 正确");
+
+// 14) 群聊带图 + @ 触发者：at / text / image 顺序正确
+pluginState.config = sanitizeConfig({
+  ...JSON.parse(fs.readFileSync(configPath, "utf-8")),
+  kbService: { enabled: false },
+  atReply: true,
+  groupRules: {
+    [GID]: {
+      enabled: true,
+      atOnly: false,
+      aiEnabled: false,
+      keywords: [{ match: "下载", reply: "给你看图", action: "reply", image: "base64://iVBORw0KGgo=" }],
+    },
+  },
+});
+pluginState.config.replyDelayMinMs = 0;
+pluginState.config.replyDelayMaxMs = 0;
+before = outbox.length;
+await handleMessage(ctx, groupEvent("怎么下载", true));
+await wait();
+assert.deepEqual(outbox[outbox.length - 1].message, [
+  { type: "at", data: { qq: OTHER } },
+  { type: "text", data: { text: " 给你看图" } },
+  { type: "image", data: { file: "base64://iVBORw0KGgo=" } },
+]);
+console.log("ok 14 - 群聊带图 + @ 段构造正确（base64 直通）");
+
+// 15) 本地图片 >5MB 被跳过：只发文字
+const bigPath = "/root/dev/plugin/test/tmp-big-image.bin";
+fs.writeFileSync(bigPath, Buffer.alloc(5 * 1024 * 1024 + 1));
+try {
+  pluginState.config = sanitizeConfig({
+    ...JSON.parse(fs.readFileSync(configPath, "utf-8")),
+    kbService: { enabled: false },
+    private: { enabled: true, whitelist: [] },
+    keywords: [{ match: "大图", reply: "只有文字", action: "reply", image: bigPath }],
+  });
+  pluginState.config.replyDelayMinMs = 0;
+  pluginState.config.replyDelayMaxMs = 0;
+  before = outbox.length;
+  await handleMessage(ctx, privateEvent("大图"));
+  await wait();
+  assert.deepEqual(outbox[outbox.length - 1].message, [{ type: "text", data: { text: "只有文字" } }]);
+  console.log("ok 15 - 超过 5MB 的本地图片被跳过");
+} finally {
+  fs.rmSync(bigPath, { force: true });
+}
 
 globalThis.fetch = originalFetch;
 

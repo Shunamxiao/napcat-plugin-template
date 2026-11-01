@@ -144,6 +144,16 @@ export interface RelayConfig {
     token: string;
 }
 
+/** 发送失败熔断（防风控）：连续失败达到阈值后暂停该群/该用户的发送 */
+export interface SendGuardConfig {
+    /** 群连续发送失败阈值，达到即熔断（默认 3） */
+    failThreshold: number;
+    /** 私聊连续发送失败阈值（默认 5） */
+    privateFailThreshold: number;
+    /** 熔断冷却秒数，群/私聊共用（默认 600） */
+    cooldownSeconds: number;
+}
+
 export interface PluginConfig {
     enabled: boolean;
     debug: boolean;
@@ -172,6 +182,8 @@ export interface PluginConfig {
     collect: CollectConfig;
     /** 反向下发端点令牌 */
     relay: RelayConfig;
+    /** 发送失败熔断 */
+    sendGuard: SendGuardConfig;
     /** 各群独立启用配置(群管理页使用) */
     groupConfigs: Record<string, GroupConfig>;
     /** 群级规则：键为群号，未配置的群沿用全局规则 */
