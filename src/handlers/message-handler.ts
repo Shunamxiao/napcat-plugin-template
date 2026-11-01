@@ -5,6 +5,9 @@
 import type { OB11Message } from 'napcat-types/napcat-onebot';
 import type { NapCatPluginContext } from 'napcat-types/napcat-onebot/network/plugin/types';
 import { pluginState } from '../core/state';
+import { isBlocked } from '../core/blocklist';
+import { pickReply, planReply, resolveSend, type Plan } from '../core/escalation';
+import { askService } from '../services/kb-client';
 import type { KeywordRule } from '../types';
 import fs from 'fs';
 import path from 'path';
@@ -56,6 +59,9 @@ export async function handleMessage(ctx: NapCatPluginContext, event: OB11Message
     const blacklist = (config.blacklist ?? []).map(String);
     if (blacklist.includes(senderId)) return;
 
+    // ① 服务侧拉黑缓存:命中后任何回复都不发(含兜底与 AI)
+    if (isBlocked(senderId, config.blocklist?.users)) return;
+
     const text = extractText(event);
     if (!text) return;
 
@@ -64,13 +70,24 @@ export async function handleMessage(ctx: NapCatPluginContext, event: OB11Message
         if (!config.private.enabled) return;
         if (!checkWhitelist(config.private.whitelist, senderId)) return;
         const hit = matchKeywords(config.keywords, text);
-        if (hit) {
-            if (!isOnCooldown(senderId, hit.match)) {
-                scheduleReply(ctx, event, { text: pickReply(hit), image: hit.image }, '[私聊] ' + senderId);
-            }
-        } else if (config.private.defaultReply && !isOnCooldown(senderId, DEFAULT_REPLY_RULE_KEY)) {
-            scheduleReply(ctx, event, { text: config.private.defaultReply }, '[私聊] ' + senderId + ' 兜底');
-        }
+        const plan = planReply({
+            kind: 'private',
+            userId: senderId,
+            atBot: false,
+            rule: hit,
+            blockUsers: config.blocklist?.users,
+            kbEnabled: config.kbService?.enabled === true,
+            aiTrigger: config.aiTrigger,
+            groupAiEnabled: true,
+        });
+        // 规则命中(含 aiFallback)沿用原冷却粒度,冷却期内整条不发
+        if ((plan.kind === 'rule' || plan.kind === 'rule-ai') && isOnCooldown(senderId, plan.rule.match)) return;
+        const ask = needsAsk(plan) ? await askKnowledge(text, senderId, undefined, 'private') : null;
+        const out = resolveSend({ plan, ask: ask ? { reply: ask } : null, kind: 'private', defaultReply: config.private.defaultReply });
+        if (!out.send) return;
+        // 私聊兜底话术沿用原来的冷却键
+        if (out.source === 'default' && isOnCooldown(senderId, DEFAULT_REPLY_RULE_KEY)) return;
+        scheduleReply(ctx, event, { text: out.text || '', image: out.image }, '[私聊] ' + senderId + sourceTag(out.source));
         return;
     }
 
@@ -82,15 +99,72 @@ export async function handleMessage(ctx: NapCatPluginContext, event: OB11Message
         // 群级规则优先:enabled=false 整群跳过,未设置的字段沿用全局
         const groupRule = config.groupRules?.[groupId];
         if (groupRule?.enabled === false) return;
+        const atBot = isDirectedAtBot(event, selfId);
         const atOnly = groupRule?.atOnly ?? config.atOnly;
-        if (atOnly && !isAtSelf(event, selfId)) return;
+        if (atOnly && !atBot) return;
         // 群专属关键词非空时只按群规则匹配,避免全局规则串群
         const keywords = groupRule?.keywords?.length ? groupRule.keywords : config.keywords;
         const hit = matchKeywords(keywords, text);
-        if (hit && !isOnCooldown(senderId, hit.match) && tryClaimReply(String(event.message_id ?? ''), groupId)) {
-            scheduleReply(ctx, event, { text: pickReply(hit), image: hit.image }, '[群聊] ' + groupId);
-        }
+        const plan = planReply({
+            kind: 'group',
+            userId: senderId,
+            atBot,
+            rule: hit,
+            blockUsers: config.blocklist?.users,
+            kbEnabled: config.kbService?.enabled === true,
+            aiTrigger: config.aiTrigger,
+            groupAiEnabled: groupRule?.aiEnabled !== false,
+        });
+        if (plan.kind === 'none' || plan.kind === 'blocked') return;
+        if ((plan.kind === 'rule' || plan.kind === 'rule-ai') && isOnCooldown(senderId, plan.rule.match)) return;
+        // 多账号同群去重:规则回复与 AI 回复都只允许一个实例发
+        if (!tryClaimReply(String(event.message_id ?? ''), groupId)) return;
+        const ask = needsAsk(plan) ? await askKnowledge(text, senderId, groupId, 'group_at') : null;
+        const out = resolveSend({ plan, ask: ask ? { reply: ask } : null, kind: 'group' });
+        if (!out.send || (!out.text && !out.image)) return;
+        scheduleReply(ctx, event, { text: out.text || '', image: out.image }, '[群聊] ' + groupId + sourceTag(out.source));
     }
+}
+
+/** 日志后缀:区分规则回复与 AI 回复,便于排查 */
+function sourceTag(source: 'rule' | 'ai' | 'default' | 'none'): string {
+    if (source === 'ai') return ' AI';
+    if (source === 'default') return ' 兜底';
+    return '';
+}
+
+/** 需要先问服务的计划 */
+function needsAsk(plan: Plan): boolean {
+    return plan.kind === 'ai' || plan.kind === 'rule-ai';
+}
+
+/** 升级 AI 前清掉 CQ 码，避免把 [CQ:at,...] 原文发给服务 */
+function cleanTextForAi(text: string): string {
+    return text.replace(/\[CQ:[^\]]*\]/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * 问一次知识库/AI；返回非空回复文本。
+ * 任何失败(未启用/空文本/超时/非 200/空 reply)都返回 null，由调用方回退，绝不抛异常。
+ */
+async function askKnowledge(
+    text: string,
+    userId: string,
+    groupId: string | undefined,
+    trigger: 'private' | 'group_at',
+): Promise<string | null> {
+    const cfg = pluginState.config.kbService;
+    if (!cfg?.enabled) return null;
+    const cleaned = cleanTextForAi(text);
+    if (!cleaned) return null;
+    const res = await askService(cfg, { text: cleaned, userId, groupId, trigger });
+    const tag = trigger + ' user=' + userId + ' group=' + (groupId || '-');
+    if (!res) {
+        pluginState.logger.debug('[知识库] 调用失败/超时 ' + tag);
+        return null;
+    }
+    pluginState.logger.info('[知识库] ' + tag + ' action=' + res.action + ' score=' + (res.score ?? '-'));
+    return res.reply.trim() || null;
 }
 
 /** 关键词匹配:prefix=前缀,contains=包含(默认)。返回命中的规则本身,便于以规则为粒度做冷却 */
@@ -111,17 +185,6 @@ function matchKeywords(keywords: KeywordRule[], text: string): KeywordRule | nul
     return null;
 }
 
-/** 从回复池随机取一条；replies 为空时回退到 reply */
-export function pickReply(rule: KeywordRule): string {
-    if (Array.isArray(rule.replies)) {
-        const pool = rule.replies.filter((item) => typeof item === 'string' && item.trim());
-        if (pool.length > 0) {
-            return pool[Math.floor(Math.random() * pool.length)];
-        }
-    }
-    return rule.reply || '';
-}
-
 /** 同一用户+同一规则的冷却检查;未冷却时记录本次命中时间 */
 function isOnCooldown(senderId: string, ruleKey: string): boolean {
     const seconds = pluginState.config.cooldownSeconds ?? 0;
@@ -138,12 +201,15 @@ function isOnCooldown(senderId: string, ruleKey: string): boolean {
     return false;
 }
 
-/** 群消息是否 @ 了机器人(at 段目标为自身 QQ) */
-function isAtSelf(event: OB11Message, selfId: string): boolean {
+/** 群消息是否指向机器人:@ 段目标为自身 QQ,或 reply 段(部分适配器会带原发送者 qq) */
+function isDirectedAtBot(event: OB11Message, selfId: string): boolean {
     if (!selfId || !Array.isArray(event.message)) return false;
-    return event.message.some(
-        (seg) => seg.type === 'at' && String((seg.data as Record<string, unknown> | undefined)?.qq ?? '') === selfId,
-    );
+    return event.message.some((seg) => {
+        const data = seg.data as Record<string, unknown> | undefined;
+        if (seg.type === 'at') return String(data?.qq ?? '') === selfId;
+        if (seg.type === 'reply') return String(data?.qq ?? '') === selfId;
+        return false;
+    });
 }
 
 /** 按配置的随机延迟安排回复,拟人化防风控;延迟为 0 时立即发送 */

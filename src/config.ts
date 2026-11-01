@@ -6,9 +6,16 @@ import type { NapCatPluginContext, PluginConfigSchema } from 'napcat-types/napca
 import type { GroupRule, KeywordRule, PluginConfig } from './types';
 
 
-/** 规则数组 → 多行文本(每行: 匹配词|类型|回复)；多回复池只在扩展配置页维护 */
+/** 规则数组 → 多行文本(每行: 匹配词|类型|回复|图片(可选)|ai(可选))；多回复池只在扩展配置页维护 */
 export function keywordsToText(kw: KeywordRule[]): string {
-    return kw.map((k) => `${k.match}|${k.matchType || 'contains'}|${k.reply}${k.image ? '|' + k.image : ''}`).join('\n');
+    return kw.map((k) => {
+        // 第4段图片缺省但第5段开启 AI 时必须保留空段，避免解析错位
+        const extra: string[] = [];
+        if (k.image) extra.push(k.image);
+        else if (k.aiFallback) extra.push('');
+        if (k.aiFallback) extra.push('ai');
+        return `${k.match}|${k.matchType || 'contains'}|${k.reply}${extra.length ? '|' + extra.join('|') : ''}`;
+    }).join('\n');
 }
 
 /** 多行文本 → 规则数组(坏行自动跳过) */
@@ -21,12 +28,14 @@ export function textToKeywords(text: string): KeywordRule[] {
             const parts = line.split('|');
             const match = (parts[0] || '').trim();
             const type = (parts[1] || 'contains').trim() === 'prefix' ? 'prefix' : 'contains';
-            // 第4段为可选图片(URL/base64:///路径)
+            // 第4段为可选图片(URL/base64:///路径)，第5段为可选 AI 升级标记
             const reply = (parts[2] || '').trim();
             const image = (parts[3] || '').trim();
+            const aiFlag = (parts[4] || '').trim().toLowerCase();
             if (!match || (!reply && !image)) return null;
             const rule: KeywordRule = { match, matchType: type, reply };
             if (image) rule.image = image;
+            if (aiFlag === 'ai' || aiFlag === '1' || aiFlag === 'true') rule.aiFallback = true;
             return rule;
         })
         .filter((k): k is KeywordRule => k !== null);
@@ -70,6 +79,14 @@ export const DEFAULT_CONFIG: PluginConfig = {
     group: { enabled: true, whitelist: [] },
     blacklist: [],
     crossAccountDedup: true,
+    kbService: {
+        enabled: false,
+        baseUrl: "https://qqbot.theworld.codes",
+        token: "",
+        timeoutMs: 8000,
+    },
+    aiTrigger: { private: true, groupAtOnly: true },
+    blocklist: { users: [], syncSeconds: 300, lastSyncedAt: "" },
 };
 
 /** ID 数组 → 多行文本(每行一个 QQ 号/群号) */

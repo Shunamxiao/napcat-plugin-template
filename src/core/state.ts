@@ -14,12 +14,37 @@ import fs from 'fs';
 import path from 'path';
 import type { NapCatPluginContext, PluginLogger } from 'napcat-types/napcat-onebot/network/plugin/types';
 import { DEFAULT_CONFIG, groupRulesToText, textToGroupRules } from '../config';
-import type { KeywordRule, PluginConfig, GroupConfig, GroupRule } from '../types';
+import type { BlockUser, KeywordRule, PluginConfig, GroupConfig, GroupRule } from '../types';
 
 // ==================== 配置清洗工具 ====================
 
 function isObject(v: unknown): v is Record<string, unknown> {
     return v !== null && typeof v === 'object' && !Array.isArray(v);
+}
+
+/** 数字字段落在 [min,max]；非数字/NaN 用 fallback */
+function clampInt(v: unknown, min: number, max: number, fallback: number): number {
+    const n = typeof v === 'number' ? v : Number(v);
+    if (!Number.isFinite(n)) return fallback;
+    return Math.min(max, Math.max(min, Math.round(n)));
+}
+
+/** 清洗服务侧拉黑缓存：逐条校验 userId、去重；reason/ts 可选 */
+export function sanitizeBlockUsers(raw: unknown): BlockUser[] {
+    if (!Array.isArray(raw)) return [];
+    const out: BlockUser[] = [];
+    const seen = new Set<string>();
+    for (const item of raw) {
+        if (!isObject(item)) continue;
+        const userId = typeof item.userId === 'string' ? item.userId.trim() : '';
+        if (!userId || seen.has(userId)) continue;
+        seen.add(userId);
+        const entry: BlockUser = { userId };
+        if (typeof item.reason === 'string' && item.reason.trim()) entry.reason = item.reason.trim();
+        if (typeof item.ts === 'string' && item.ts.trim()) entry.ts = item.ts.trim();
+        out.push(entry);
+    }
+    return out;
 }
 
 /** 清洗单条关键词规则,结构或内容非法时返回 null */
@@ -41,6 +66,7 @@ function sanitizeKeywordRule(raw: unknown): KeywordRule | null {
     };
     if (replies.length > 0) rule.replies = replies;
     if (typeof raw.image === 'string' && raw.image.trim()) rule.image = raw.image.trim();
+    if (raw.aiFallback === true) rule.aiFallback = true;
     return rule;
 }
 
@@ -52,6 +78,7 @@ function sanitizeGroupRules(raw: Record<string, unknown>): Record<string, GroupR
         const item: GroupRule = {};
         if (typeof rule.enabled === 'boolean') item.enabled = rule.enabled;
         if (typeof rule.atOnly === 'boolean') item.atOnly = rule.atOnly;
+        if (typeof rule.aiEnabled === 'boolean') item.aiEnabled = rule.aiEnabled;
         if (Array.isArray(rule.keywords)) {
             const keywords = rule.keywords.map(sanitizeKeywordRule).filter((k): k is KeywordRule => k !== null);
             if (keywords.length > 0) item.keywords = keywords;
@@ -122,6 +149,32 @@ export function sanitizeConfig(raw: unknown): PluginConfig {
     }
 
     if (Array.isArray(raw.blacklist)) out.blacklist = raw.blacklist.map(String);
+
+    // 知识库/AI 服务：字段逐个白名单化，坏值回退默认，绝不把未知内容带进运行时
+    if (isObject(raw.kbService)) {
+        const kb = raw.kbService;
+        out.kbService = {
+            enabled: typeof kb.enabled === 'boolean' ? kb.enabled : out.kbService.enabled,
+            baseUrl: typeof kb.baseUrl === 'string' && kb.baseUrl.trim()
+                ? kb.baseUrl.trim().replace(/\/+$/, '')
+                : out.kbService.baseUrl,
+            token: typeof kb.token === 'string' ? kb.token.trim() : out.kbService.token,
+            timeoutMs: clampInt(kb.timeoutMs, 500, 60000, out.kbService.timeoutMs),
+        };
+    }
+    if (isObject(raw.aiTrigger)) {
+        out.aiTrigger = {
+            private: typeof raw.aiTrigger.private === 'boolean' ? raw.aiTrigger.private : out.aiTrigger.private,
+            groupAtOnly: typeof raw.aiTrigger.groupAtOnly === 'boolean' ? raw.aiTrigger.groupAtOnly : out.aiTrigger.groupAtOnly,
+        };
+    }
+    if (isObject(raw.blocklist)) {
+        out.blocklist = {
+            users: Array.isArray(raw.blocklist.users) ? sanitizeBlockUsers(raw.blocklist.users) : out.blocklist.users,
+            syncSeconds: clampInt(raw.blocklist.syncSeconds, 30, 86400, out.blocklist.syncSeconds),
+            lastSyncedAt: typeof raw.blocklist.lastSyncedAt === 'string' ? raw.blocklist.lastSyncedAt : out.blocklist.lastSyncedAt,
+        };
+    }
 
     // 各群独立启用配置
     if (isObject(raw.groupConfigs)) {
@@ -345,6 +398,16 @@ class PluginState {
             const parsed = textToGroupRules(partial.groupRulesText);
             if (parsed) merged.groupRules = parsed;
         }
+        // 知识库/AI 相关嵌套对象同样先合并旧值，避免部分提交时丢字段
+        if (partial.kbService) merged.kbService = { ...this.config.kbService, ...partial.kbService };
+        if (partial.aiTrigger) merged.aiTrigger = { ...this.config.aiTrigger, ...partial.aiTrigger };
+        if (partial.blocklist) {
+            merged.blocklist = {
+                ...this.config.blocklist,
+                ...partial.blocklist,
+                users: Array.isArray(partial.blocklist.users) ? partial.blocklist.users : this.config.blocklist.users,
+            };
+        }
         this.config = sanitizeConfig(merged);
         this.saveConfig();
     }
@@ -365,6 +428,14 @@ class PluginState {
             ...this.config.groupConfigs[groupId],
             ...config,
         };
+        this.saveConfig();
+    }
+
+    /**
+     * 更新服务侧拉黑缓存并落盘（权威在服务侧；同步失败时调用方不会走到这里）
+     */
+    setBlocklistCache(users: BlockUser[], syncedAt: string): void {
+        this.config.blocklist = { ...this.config.blocklist, users, lastSyncedAt: syncedAt };
         this.saveConfig();
     }
 

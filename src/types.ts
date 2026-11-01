@@ -14,6 +14,44 @@ export interface KeywordRule {
     replies?: string[];
     /** 可选:随回复发送的图片(URL / base64://xxx / 容器内绝对路径) */
     image?: string;
+    /** 命中本规则时先问知识库/AI,拿不到答案再退回 reply(默认 false) */
+    aiFallback?: boolean;
+}
+
+/** 知识库/AI 服务配置 */
+export interface KbServiceConfig {
+    /** 总开关；关闭后规则 aiFallback 与未命中升级都不调服务 */
+    enabled: boolean;
+    /** 服务地址，形如 https://qqbot.theworld.codes */
+    baseUrl: string;
+    /** x-bot-token，页面填写，不写日志 */
+    token: string;
+    /** 单次请求超时(毫秒) */
+    timeoutMs: number;
+}
+
+/** 未命中规则时升级 AI 的触发条件 */
+export interface AiTriggerConfig {
+    /** 私聊未命中时升级 */
+    private: boolean;
+    /** 群内仅 @机器人/回复机器人时升级；false 时群内任意未命中都升级 */
+    groupAtOnly: boolean;
+}
+
+/** 服务侧拉黑名单的一条缓存 */
+export interface BlockUser {
+    userId: string;
+    reason?: string;
+    ts?: string;
+}
+
+/** 服务侧拉黑名单的本地缓存(权威在服务侧) */
+export interface BlocklistCacheConfig {
+    users: BlockUser[];
+    /** 定时同步间隔(秒) */
+    syncSeconds: number;
+    /** 上次成功同步时间(ISO) */
+    lastSyncedAt: string;
 }
 
 /** 私聊配置 */
@@ -44,6 +82,8 @@ export interface GroupRule {
     atOnly?: boolean;
     /** 该群专属关键词；非空时替代全局关键词 */
     keywords?: KeywordRule[];
+    /** 该群是否允许升级 AI；false = 该群显式禁用(规则 aiFallback 也不调服务)，未设置 = 允许 */
+    aiEnabled?: boolean;
 }
 
 /** 入群欢迎配置 */
@@ -94,6 +134,12 @@ export interface PluginConfig {
     groupRulesText?: string;
     /** 黑名单的多行文本形式(每行一个 QQ 号,# 注释) */
     blacklistText?: string;
+    /** 知识库/AI 服务(FAQ 直答 + AI 兜底) */
+    kbService: KbServiceConfig;
+    /** 未命中规则时是否升级 AI */
+    aiTrigger: AiTriggerConfig;
+    /** 服务侧拉黑名单缓存 */
+    blocklist: BlocklistCacheConfig;
 }
 
 export interface ApiResponse<T = unknown> {
