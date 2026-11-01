@@ -11,6 +11,7 @@ import { isGroupConfigured, resolveGroupFallback, resolveGroupPolicy } from '../
 import { appendHandoffRecord } from '../core/handoff';
 import { classifySendError, sendWithRetry } from '../core/send-retry';
 import { SendGuard } from '../core/send-guard';
+import { LoopGuard } from '../core/loop-guard';
 import {
     beginCollect,
     clearCollect,
@@ -68,6 +69,13 @@ export async function handleMessage(ctx: NapCatPluginContext, event: OB11Message
     // 不回复自己
     if (senderId === selfId || senderId === '0') return;
 
+    // 忽略发送者：两个机器人同群时填彼此的号，命中直接丢弃（不记冷却、不回复）
+    const ignoreSenders = (config.ignoreSenders ?? []).map(String);
+    if (ignoreSenders.includes(senderId)) {
+        pluginState.logger.info('[丢弃] reason=ignore_sender user=' + senderId + (event.group_id ? ' group=' + event.group_id : ''));
+        return;
+    }
+
     // 黑名单:名单内用户直接跳过,不触发任何回复
     const blacklist = (config.blacklist ?? []).map(String);
     if (blacklist.includes(senderId)) return;
@@ -77,6 +85,12 @@ export async function handleMessage(ctx: NapCatPluginContext, event: OB11Message
 
     const text = extractText(event);
     if (!text) return;
+
+    // 自回声保护：与本目标 60 秒内最后一条已发回复完全相同 → 丢弃，防被自己/对方复制触发
+    if (getLoopGuard().isSelfEcho(replyKey(event), text)) {
+        pluginState.logger.info('[丢弃] reason=self_echo user=' + senderId + (event.group_id ? ' group=' + event.group_id : '') + ' text=' + text.slice(0, 40));
+        return;
+    }
 
     // 私聊：必回 —— 命中规则按规则，未命中/服务无答案一律发兜底话术
     if (kind === 'private') {
@@ -477,6 +491,25 @@ function guardLabel(key: string): string {
     return kind === 'group' ? '群 ' + id : '私聊 ' + id;
 }
 
+/** 回复目标键：group:<群号> / private:<QQ号>，熔断与自回声共用 */
+function replyKey(event: OB11Message): string {
+    if (event.message_type === 'group' && event.group_id) return 'group:' + String(event.group_id);
+    return 'private:' + String(event.sender?.user_id ?? event.user_id ?? '');
+}
+
+/** 回复对刷防护单例：每次取用都同步最新配置，配置热更新立即生效 */
+let loopGuard: LoopGuard | null = null;
+function getLoopGuard(): LoopGuard {
+    const cfg = pluginState.config.loopGuard ?? { maxReplies: 5, windowSeconds: 60, pauseSeconds: 300 };
+    if (!loopGuard) loopGuard = new LoopGuard();
+    loopGuard.configure({
+        maxReplies: cfg.maxReplies,
+        windowMs: cfg.windowSeconds * 1000,
+        pauseMs: cfg.pauseSeconds * 1000,
+    });
+    return loopGuard;
+}
+
 function errorMessage(error: unknown): string {
     return error instanceof Error ? error.message : String(error ?? '');
 }
@@ -502,6 +535,26 @@ async function sendReply(ctx: NapCatPluginContext, event: OB11Message, content: 
         return;
     }
 
+    // 群内对刷熔断：窗口内已发出达到阈值 → 暂停该群，期间不发送
+    if (isGroup) {
+        const verdict = getLoopGuard().allowSend(key);
+        if (!verdict.allowed) {
+            const loopCfg = pluginState.config.loopGuard;
+            if (verdict.justPaused) {
+                pluginState.logger.warn(
+                    '[丢弃] reason=loop_breaker group=' + targetId + ' 窗口内已发 ' +
+                    loopCfg.maxReplies + ' 条，暂停 ' + loopCfg.pauseSeconds + ' 秒',
+                );
+            } else {
+                pluginState.logger.debug(
+                    '[丢弃] reason=loop_breaker group=' + targetId + ' 暂停中，剩余 ' +
+                    Math.ceil((verdict.remainingMs ?? 0) / 1000) + ' 秒',
+                );
+            }
+            return;
+        }
+    }
+
     const result = await sendWithRetry(
         () => replyMessage(ctx, event, content),
         2,
@@ -514,6 +567,7 @@ async function sendReply(ctx: NapCatPluginContext, event: OB11Message, content: 
     );
     if (result.ok) {
         guard.onSuccess(key);
+        getLoopGuard().recordSend(key, content.text || '');
         const desc = (content.text || "") + (content.image ? " [图片]" : "");
         pluginState.logger.info(logTag + (result.attempts > 1 ? "（重试后成功）" : "") + " → " + desc.slice(0, 60));
         return;
@@ -558,14 +612,40 @@ function extractText(event: OB11Message): string {
     return '';
 }
 
-/** 校验图片来源:允许 http(s)/base64://;本地路径限制在 /root 下且 <=5MB */
-function resolveImageSource(raw: string): string | null {
+/** QQ 客户端实际能展示的图片格式；avif/bmp/svg/heic 等会发出但用户看不到图 */
+const SUPPORTED_IMAGE_EXTS = new Set([".jpg", ".jpeg", ".png", ".webp", ".gif"]);
+
+/** 取 URL/路径的小写扩展名，忽略 query 与 hash */
+function imageExtension(src: string): string {
+    const pathPart = src.split(/[?#]/)[0] || "";
+    return path.extname(pathPart).toLowerCase();
+}
+
+/**
+ * 校验图片来源与格式：http(s)/base64:// / 本地 /root 下文件且 <=5MB。
+ * http(s) 直链与本地文件只放行 jpg/jpeg/png/webp/gif（QQ 不支持 avif 等格式）；
+ * base64:// 无法从字符串判断格式，原样放行。非法来源返回 null 并打 warn。
+ */
+export function resolveImageSource(raw: string): string | null {
     const src = String(raw || "").trim();
     if (!src) return null;
-    if (/^(https?:\/\/|base64:\/\/)/i.test(src)) return src;
+    if (/^base64:\/\//i.test(src)) return src;
+    if (/^https?:\/\//i.test(src)) {
+        const ext = imageExtension(src);
+        if (!SUPPORTED_IMAGE_EXTS.has(ext)) {
+            pluginState.logger.warn("[图片] QQ 不支持 " + (ext || "无扩展名") + " 格式,已跳过: " + src);
+            return null;
+        }
+        return src;
+    }
     const local = src.startsWith("file://") ? src.slice(7) : src;
     if (!local.startsWith("/root/")) {
         pluginState.logger.warn("[图片] 本地图片必须位于 /root 下,已跳过: " + local);
+        return null;
+    }
+    const ext = imageExtension(local);
+    if (!SUPPORTED_IMAGE_EXTS.has(ext)) {
+        pluginState.logger.warn("[图片] QQ 不支持 " + (ext || "无扩展名") + " 格式,已跳过: " + local);
         return null;
     }
     try {
@@ -575,17 +655,12 @@ function resolveImageSource(raw: string): string | null {
         return local;
     } catch { return null; }
 }
-async function replyMessage(ctx: NapCatPluginContext, event: OB11Message, content: { text: string; image?: string }): Promise<void> {
+
+/** 回复内容 → OneBot segments；atUserId 非空时最前面加 at 段并补空格 */
+function buildSegments(content: { text: string; image?: string }, atUserId?: string): Array<Record<string, unknown>> {
     const segments: Array<Record<string, unknown>> = [];
-    // 群聊 @ 回复：at 段后补一个空格，避免正文与 @ 粘连
-    let atAdded = false;
-    if (event.message_type === "group" && event.group_id && pluginState.config.atReply) {
-        const senderId = String(event.sender?.user_id ?? event.user_id ?? '');
-        if (senderId && senderId !== '0') {
-            segments.push({ type: "at", data: { qq: senderId } });
-            atAdded = true;
-        }
-    }
+    const atAdded = !!atUserId;
+    if (atUserId) segments.push({ type: "at", data: { qq: atUserId } });
     if (content.text) {
         segments.push({ type: "text", data: { text: atAdded ? ' ' + content.text : content.text } });
     } else if (atAdded) {
@@ -595,6 +670,17 @@ async function replyMessage(ctx: NapCatPluginContext, event: OB11Message, conten
         const src = resolveImageSource(content.image);
         if (src) segments.push({ type: "image", data: { file: src } });
     }
+    return segments;
+}
+
+async function replyMessage(ctx: NapCatPluginContext, event: OB11Message, content: { text: string; image?: string }): Promise<void> {
+    // 群聊 @ 回复：at 段后补一个空格，避免正文与 @ 粘连
+    let atUserId = '';
+    if (event.message_type === "group" && event.group_id && pluginState.config.atReply) {
+        const senderId = String(event.sender?.user_id ?? event.user_id ?? '');
+        if (senderId && senderId !== '0') atUserId = senderId;
+    }
+    const segments = buildSegments(content, atUserId || undefined);
     if (!segments.length) return;
     const params: Record<string, unknown> = { message: segments };
     if (event.message_type === "group" && event.group_id) {
@@ -604,5 +690,23 @@ async function replyMessage(ctx: NapCatPluginContext, event: OB11Message, conten
         params.user_id = String(event.user_id);
         params.message_type = "private";
     }
+    await ctx.actions.call("send_msg", params, ctx.adapterName, ctx.pluginManager.config);
+}
+
+/**
+ * relay 反向下发：按 userId / groupId 发送 text+image 混合消息。
+ * 与规则回复共用 buildSegments + resolveImageSource，不经过 @ 逻辑。
+ * 调用方需先校验 image（非法格式应在入口拒绝，避免静默只发文字）。
+ */
+export async function sendRelayMessage(
+    ctx: NapCatPluginContext,
+    target: { userId: string; groupId?: string },
+    content: { text: string; image?: string },
+): Promise<void> {
+    const segments = buildSegments(content);
+    if (!segments.length) throw new Error("消息内容为空");
+    const params: Record<string, unknown> = target.groupId
+        ? { message_type: "group", group_id: target.groupId, message: segments }
+        : { message_type: "private", user_id: target.userId, message: segments };
     await ctx.actions.call("send_msg", params, ctx.adapterName, ctx.pluginManager.config);
 }

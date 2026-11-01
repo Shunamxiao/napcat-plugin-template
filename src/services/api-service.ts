@@ -24,6 +24,7 @@ import type {
 import { timingSafeEqual } from 'crypto';
 import { maskConfig, pluginState } from '../core/state';
 import { buildGroupPolicies } from '../core/policy';
+import { resolveImageSource, sendRelayMessage } from '../handlers/message-handler';
 
 /** 令牌比较：长度不同直接失败，等长走常量时间比较 */
 function tokenMatches(provided: string, expected: string): boolean {
@@ -86,7 +87,9 @@ export function registerApiRoutes(ctx: NapCatPluginContext): void {
 
     /**
      * POST /relay
-     * body: { userId, groupId?, text }
+     * body: { userId, groupId?, text?, image? }（text 与 image 至少一个）
+     * image 与规则图片同规则：http(s) 直链 jpg/jpeg/png/webp/gif、base64://、
+     *   /root 下本地文件且 <=5MB；其它格式直接拒绝，避免发出用户看不到的破图。
      * header: x-relay-token（与配置 relay.token 一致；未配置 = 拒绝）
      * 成功 {ok:true,sent:true}；失败返回非 2xx + {ok:false,error}，服务侧按 HTTP 状态判定。
      */
@@ -104,16 +107,26 @@ export function registerApiRoutes(ctx: NapCatPluginContext): void {
         const userId = body.userId != null ? String(body.userId).trim() : '';
         const groupId = body.groupId != null ? String(body.groupId).trim() : '';
         const text = typeof body.text === 'string' ? body.text : '';
-        if (!userId || !text.trim()) {
-            return res.status(400).json({ ok: false, error: 'userId 与 text 不能为空' });
+        const image = typeof body.image === 'string' ? body.image.trim() : '';
+        if (!userId || (!text.trim() && !image)) {
+            return res.status(400).json({ ok: false, error: 'userId 与 (text 或 image) 不能为空' });
+        }
+        // 与规则图片共用校验：非法格式/不可用文件在此拒绝，不做"静默只发文字"降级
+        const imageSrc = image ? resolveImageSource(image) : null;
+        if (image && !imageSrc) {
+            ctx.logger.warn('[relay] 图片不可用，已拒绝: ' + image.slice(0, 120));
+            return res.status(400).json({
+                ok: false,
+                error: '图片不可用：仅支持 jpg/jpeg/png/webp/gif，http(s) 直链、base64:// 或 /root 下 ≤5MB 本地文件',
+            });
         }
         try {
-            const message = [{ type: 'text', data: { text } }];
-            const params: Record<string, unknown> = groupId
-                ? { message_type: 'group', group_id: groupId, message }
-                : { message_type: 'private', user_id: userId, message };
-            await ctx.actions.call('send_msg', params, ctx.adapterName, ctx.pluginManager.config);
-            ctx.logger.info('[relay] 已下发 user=' + userId + (groupId ? ' group=' + groupId : ''));
+            await sendRelayMessage(
+                ctx,
+                { userId, groupId },
+                { text: text.trim() ? text : '', image: imageSrc ?? undefined },
+            );
+            ctx.logger.info('[relay] 已下发 user=' + userId + (groupId ? ' group=' + groupId : '') + (imageSrc ? ' [图片]' : ''));
             res.json({ ok: true, sent: true });
         } catch (err) {
             const message = err instanceof Error ? err.message : String(err);

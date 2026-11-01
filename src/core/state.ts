@@ -207,6 +207,27 @@ export function sanitizeConfig(raw: unknown): PluginConfig {
             cooldownSeconds: clampInt(raw.sendGuard.cooldownSeconds, 1, 86400, out.sendGuard.cooldownSeconds),
         };
     }
+    // 忽略发送者：只保留非空字符串，去重
+    if (Array.isArray(raw.ignoreSenders)) {
+        const seen = new Set<string>();
+        const list: string[] = [];
+        for (const item of raw.ignoreSenders) {
+            const value = String(item).trim();
+            if (!value || seen.has(value)) continue;
+            seen.add(value);
+            list.push(value);
+        }
+        out.ignoreSenders = list;
+    }
+    if (typeof raw.ignoreSendersText === 'string') out.ignoreSendersText = raw.ignoreSendersText;
+    // 群内对刷熔断：阈值/窗口/暂停都受限，防止误配成 0 或巨值失效
+    if (isObject(raw.loopGuard)) {
+        out.loopGuard = {
+            maxReplies: clampInt(raw.loopGuard.maxReplies, 1, 100, out.loopGuard.maxReplies),
+            windowSeconds: clampInt(raw.loopGuard.windowSeconds, 1, 3600, out.loopGuard.windowSeconds),
+            pauseSeconds: clampInt(raw.loopGuard.pauseSeconds, 1, 86400, out.loopGuard.pauseSeconds),
+        };
+    }
     if (typeof raw.crossAccountDedup === 'boolean') out.crossAccountDedup = raw.crossAccountDedup;
     if (typeof raw.keywordsText === 'string') out.keywordsText = raw.keywordsText;
     if (typeof raw.blacklistText === 'string') out.blacklistText = raw.blacklistText;

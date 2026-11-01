@@ -36,6 +36,8 @@ fs.writeFileSync(
     fallback: { privateText: "私聊兜底话术", groupAtText: "群@兜底话术" },
     collect: { enabled: false, questions: [] },
     relay: { token: "" },
+    // 本文件测的是消息流转，不放行对刷熔断（阈值调大，避免连续用例互相影响）
+    loopGuard: { maxReplies: 100, windowSeconds: 60, pauseSeconds: 300 },
     kbService: { enabled: false },
     aiTrigger: { private: true, groupAtOnly: true },
     groupRules: { [GID]: { enabled: true, atOnly: false, aiEnabled: true } },
@@ -380,7 +382,7 @@ pluginState.config = sanitizeConfig({
   ...JSON.parse(fs.readFileSync(configPath, "utf-8")),
   kbService: { enabled: false },
   private: { enabled: true, whitelist: [] },
-  keywords: [{ match: "下载", matchType: "contains", reply: "给你下载地址", action: "reply", image: "https://cdn.example/x.avif" }],
+  keywords: [{ match: "下载", matchType: "contains", reply: "给你下载地址", action: "reply", image: "https://cdn.example/x.png" }],
 });
 pluginState.config.replyDelayMinMs = 0;
 pluginState.config.replyDelayMaxMs = 0;
@@ -389,7 +391,7 @@ await handleMessage(ctx, privateEvent("怎么下载"));
 await wait();
 assert.deepEqual(outbox[outbox.length - 1].message, [
   { type: "text", data: { text: "给你下载地址" } },
-  { type: "image", data: { file: "https://cdn.example/x.avif" } },
+  { type: "image", data: { file: "https://cdn.example/x.png" } },
 ]);
 console.log("ok 13 - 私聊带图 segments 正确");
 
@@ -420,7 +422,7 @@ assert.deepEqual(outbox[outbox.length - 1].message, [
 console.log("ok 14 - 群聊带图 + @ 段构造正确（base64 直通）");
 
 // 15) 本地图片 >5MB 被跳过：只发文字
-const bigPath = "/root/dev/plugin/test/tmp-big-image.bin";
+const bigPath = "/root/dev/plugin/test/tmp-big-image.png";
 fs.writeFileSync(bigPath, Buffer.alloc(5 * 1024 * 1024 + 1));
 try {
   pluginState.config = sanitizeConfig({

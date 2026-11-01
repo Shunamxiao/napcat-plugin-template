@@ -154,6 +154,16 @@ export interface SendGuardConfig {
     cooldownSeconds: number;
 }
 
+/** 群内回复对刷熔断：窗口内发出达到阈值后暂停该群，防两个机器人互相触发 */
+export interface LoopGuardConfig {
+    /** 窗口内最多发出条数，达到后暂停该群（默认 5） */
+    maxReplies: number;
+    /** 统计窗口(秒，默认 60) */
+    windowSeconds: number;
+    /** 暂停时长(秒，默认 300) */
+    pauseSeconds: number;
+}
+
 export interface PluginConfig {
     enabled: boolean;
     debug: boolean;
@@ -184,6 +194,12 @@ export interface PluginConfig {
     relay: RelayConfig;
     /** 发送失败熔断 */
     sendGuard: SendGuardConfig;
+    /** 忽略的发送者 QQ 号（两个机器人同群时填自己/对方，命中直接丢弃） */
+    ignoreSenders: string[];
+    /** 忽略发送者的多行文本形式（供配置表单编辑，不参与匹配） */
+    ignoreSendersText?: string;
+    /** 群内回复对刷熔断 */
+    loopGuard: LoopGuardConfig;
     /** 各群独立启用配置(群管理页使用) */
     groupConfigs: Record<string, GroupConfig>;
     /** 群级规则：键为群号，未配置的群沿用全局规则 */
