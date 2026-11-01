@@ -111,6 +111,18 @@ function sanitizeGroupRules(raw: Record<string, unknown>): Record<string, GroupR
         if (typeof rule.enabled === 'boolean') item.enabled = rule.enabled;
         if (typeof rule.atOnly === 'boolean') item.atOnly = rule.atOnly;
         if (typeof rule.aiEnabled === 'boolean') item.aiEnabled = rule.aiEnabled;
+        // 群级入群欢迎：只保留 boolean/string/null，null 表示跟随全局
+        if (isObject(rule.welcome)) {
+            const welcome: NonNullable<GroupRule['welcome']> = {};
+            if (typeof rule.welcome.enabled === 'boolean') welcome.enabled = rule.welcome.enabled;
+            else if (rule.welcome.enabled === null) welcome.enabled = null;
+            if (typeof rule.welcome.template === 'string') {
+                welcome.template = rule.welcome.template.trim() ? rule.welcome.template : null;
+            } else if (rule.welcome.template === null) {
+                welcome.template = null;
+            }
+            if (Object.keys(welcome).length > 0) item.welcome = welcome;
+        }
         if (Array.isArray(rule.keywords)) {
             const keywords = rule.keywords.map(sanitizeKeywordRule).filter((k): k is KeywordRule => k !== null);
             if (keywords.length > 0) item.keywords = keywords;

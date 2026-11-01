@@ -249,7 +249,11 @@ function groupCardHtml(gid, rule){
   var atOnly = rule.atOnly != null ? !!rule.atOnly : !!(cfg && cfg.atOnly);
   var kwHtml = (Array.isArray(rule.keywords) ? rule.keywords : []).map(groupKwRowHtml).join('');
   if (!kwHtml) kwHtml = '<p class="muted grp-kw-empty">本群暂无专属关键词，沿用全局关键词。</p>';
-  return '<div class="grp" data-gid="' + esc(gid) + '"><div class="grp-head"><span class="grp-id">群 ' + esc(gid) + '</span><label><input type="checkbox" class="grp-enabled"' + (rule.enabled !== false ? ' checked' : '') + '> 启用本群自动回复</label><label><input type="checkbox" class="grp-atonly"' + (atOnly ? ' checked' : '') + '> 仅 @ 时回复</label><label><input type="checkbox" class="grp-ai"' + (rule.aiEnabled !== false ? ' checked' : '') + '> 允许 AI 升级</label><button class="danger grp-del">删除群规则</button></div><p class="muted">本群专属关键词（留空沿用全局关键词；有内容则只按本群关键词匹配；回复多条用 ||| 分隔）</p><div class="gkw-list">' + kwHtml + '</div><div class="row"><button class="gray grp-kw-add">+ 添加匹配词</button></div></div>';
+  var w = rule.welcome || {};
+  var welcomeMode = w.enabled === true ? 'on' : (w.enabled === false ? 'off' : '');
+  var welcomeTpl = typeof w.template === 'string' ? w.template : '';
+  var welcomeSel = '<select class="grp-welcome-mode"><option value=""' + (welcomeMode === '' ? ' selected' : '') + '>跟随全局</option><option value="on"' + (welcomeMode === 'on' ? ' selected' : '') + '>本群开启</option><option value="off"' + (welcomeMode === 'off' ? ' selected' : '') + '>本群关闭</option></select>';
+  return '<div class="grp" data-gid="' + esc(gid) + '"><div class="grp-head"><span class="grp-id">群 ' + esc(gid) + '</span><label><input type="checkbox" class="grp-enabled"' + (rule.enabled !== false ? ' checked' : '') + '> 启用本群自动回复</label><label><input type="checkbox" class="grp-atonly"' + (atOnly ? ' checked' : '') + '> 仅 @ 时回复</label><label><input type="checkbox" class="grp-ai"' + (rule.aiEnabled !== false ? ' checked' : '') + '> 允许 AI 升级</label><button class="danger grp-del">删除群规则</button></div><div class="row grp-welcome"><label>入群欢迎</label>' + welcomeSel + '<input type="text" class="grp-welcome-tpl w-reply" value="' + esc(welcomeTpl) + '" placeholder="欢迎模板，留空跟随全局（支持 {user_id}、{group_id}）"></div><p class="muted">本群专属关键词（留空沿用全局关键词；有内容则只按本群关键词匹配；回复多条用 ||| 分隔）</p><div class="gkw-list">' + kwHtml + '</div><div class="row"><button class="gray grp-kw-add">+ 添加匹配词</button></div></div>';
 }
 function refreshGrpEmpty(){
   el('grp-empty').style.display = document.querySelectorAll('#grp-list .grp').length ? 'none' : '';
@@ -385,6 +389,9 @@ function collectGroupRules(){
       keywords.push(gRule);
     });
     var rule = { enabled: card.querySelector('.grp-enabled').checked, atOnly: card.querySelector('.grp-atonly').checked, aiEnabled: !!card.querySelector('.grp-ai').checked };
+    var wm = card.querySelector('.grp-welcome-mode').value;
+    var wt = card.querySelector('.grp-welcome-tpl').value.trim();
+    rule.welcome = { enabled: wm === 'on' ? true : (wm === 'off' ? false : null), template: wt || null };
     if (keywords.length) rule.keywords = keywords;
     result[gid] = rule;
   });
@@ -450,3 +457,5 @@ function registerWebUI(ctx: NapCatPluginContext): void {
 // 不参与插件生命周期；NapCat 只读取上面约定的钩子。
 export { isBlocked, syncBlocklist, startBlocklistSync, stopBlocklistSync } from './core/blocklist';
 export { pickReply, planReply, resolveSend } from './core/escalation';
+export { resolveWelcome } from './handlers/event-handler';
+export { sanitizeConfig } from './core/state';

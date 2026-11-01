@@ -5,9 +5,24 @@
 import type { NapCatPluginContext } from 'napcat-types/napcat-onebot/network/plugin/types';
 import { EventType } from 'napcat-types/napcat-onebot/event/index';
 import { pluginState } from '../core/state';
+import type { GroupWelcomeConfig, GroupWelcomeOverride } from '../types';
 
 /** OneBot 事件按需读取的宽松结构；不同版本可能存在字段差异 */
 type EventLike = Record<string, unknown>;
+
+/**
+ * 解析某群的入群欢迎配置：群级有值优先，null/缺省回落到全局。
+ * 纯函数，便于单测；空模板同样视为跟随全局。
+ */
+export function resolveWelcome(
+    override: GroupWelcomeOverride | undefined,
+    global: GroupWelcomeConfig | undefined,
+): { enabled: boolean; template: string } {
+    const enabled = override?.enabled != null ? override.enabled : !!global?.enabled;
+    const ownTemplate = typeof override?.template === 'string' && override.template.trim() ? override.template : '';
+    const template = String(ownTemplate || global?.template || '').trim();
+    return { enabled: !!enabled, template };
+}
 
 /**
  * 处理非消息事件。
@@ -28,17 +43,19 @@ export async function handleOneBotEvent(ctx: NapCatPluginContext, event: unknown
 
 /** 入群欢迎：NapCat 的 group_increase 事件把新成员 QQ 放在 user_id */
 async function handleGroupIncrease(ctx: NapCatPluginContext, ev: EventLike): Promise<void> {
-    const conf = pluginState.config.groupWelcome;
-    if (!conf?.enabled) return;
-    const template = String(conf.template ?? '').trim();
-    if (!template) return;
-
     const groupId = String(ev.group_id ?? '');
     const userId = String(ev.user_id ?? '');
     const selfId = String(ev.self_id ?? ctx.pluginManager.config?.self_id ?? '');
     if (!groupId || !userId || userId === '0') return;
     // 机器人自己入群时不发欢迎
     if (selfId && userId === selfId) return;
+
+    // 群级 welcome 覆盖全局；null/缺省 = 跟随全局
+    const groupRule = pluginState.config.groupRules?.[groupId];
+    const conf = resolveWelcome(groupRule?.welcome, pluginState.config.groupWelcome);
+    if (!conf.enabled) return;
+    const template = conf.template;
+    if (!template) return;
 
     const text = renderWelcomeTemplate(template, groupId, userId);
     try {

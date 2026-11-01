@@ -84,6 +84,16 @@ export interface GroupRule {
     keywords?: KeywordRule[];
     /** 该群是否允许升级 AI；false = 该群显式禁用(规则 aiFallback 也不调服务)，未设置 = 允许 */
     aiEnabled?: boolean;
+    /** 该群入群欢迎覆盖；字段为 null/缺省时跟随全局 groupWelcome */
+    welcome?: GroupWelcomeOverride;
+}
+
+/** 群级入群欢迎覆盖：null/缺省 = 跟随全局 */
+export interface GroupWelcomeOverride {
+    /** true = 本群单独开启，false = 本群关闭，null/缺省 = 跟随全局 */
+    enabled?: boolean | null;
+    /** 本群欢迎模板；空/null/缺省 = 跟随全局模板 */
+    template?: string | null;
 }
 
 /** 入群欢迎配置 */

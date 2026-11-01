@@ -120,7 +120,7 @@ export function buildConfigSchema(ctx: NapCatPluginContext): PluginConfigSchema 
         ctx.NapCatConfig.number('replyDelayMinMs', '回复延迟下限(毫秒)', 300, '回复前随机延迟下限,拟人化行为,降低风控风险'),
         ctx.NapCatConfig.number('replyDelayMaxMs', '回复延迟上限(毫秒)', 1200, '回复前随机延迟上限,需大于等于下限'),
         ctx.NapCatConfig.boolean('atOnly', '群聊仅被 @ 时回复', false, '开启后群聊只有 @ 机器人的消息才会触发自动回复'),
-        ctx.NapCatConfig.text('groupRulesText', '群级规则(JSON)', groupRulesToText(DEFAULT_CONFIG.groupRules), 'JSON 对象，键为群号，值 {enabled,atOnly,keywords:[{match,matchType,reply,replies?}]}。未配置的群沿用全局规则；enabled=false 该群不回复；atOnly 覆盖全局；keywords 非空时替代全局关键词。格式错误将被忽略'),
+        ctx.NapCatConfig.text('groupRulesText', '群级规则(JSON)', groupRulesToText(DEFAULT_CONFIG.groupRules), 'JSON 对象，键为群号，值 {enabled,atOnly,aiEnabled,welcome:{enabled,template},keywords:[{match,matchType,reply,replies?}]}。未配置的群沿用全局规则；enabled=false 该群不回复；atOnly 覆盖全局；welcome.enabled/template 为 null 或缺省时跟随全局入群欢迎；keywords 非空时替代全局关键词。格式错误将被忽略'),
         ctx.NapCatConfig.html('<div style="margin:12px 0 4px;font-weight:600;font-size:14px;">机器人能力</div>'),
         ctx.NapCatConfig.boolean('atReply', '群聊回复时 @ 触发者', false, '开启后群聊自动回复会在消息前 @ 触发者；私聊不受影响'),
         ctx.NapCatConfig.boolean('groupWelcome.enabled', '入群欢迎', false, '新成员入群时发送欢迎语；独立于自动回复总开关'),
