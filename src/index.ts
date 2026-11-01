@@ -26,6 +26,8 @@ import type {
     NapCatPluginContext,
 } from 'napcat-types/napcat-onebot/network/plugin/types';
 import { EventType } from 'napcat-types/napcat-onebot/event/index';
+import fs from 'fs';
+import path from 'path';
 
 import { DEFAULT_CONFIG, buildConfigSchema, groupRulesToText, idListToText, keywordsToText, textToGroupRules, textToIdList, textToKeywords } from './config';
 import { pluginState } from './core/state';
@@ -177,6 +179,111 @@ export const plugin_on_config_change: PluginModule['plugin_on_config_change'] = 
 /**
  * 注册 WebUI 页面和静态资源
  */
+
+/** 独立配置专页（扩展页面列表中可直达） */
+const SETTINGS_PAGE_HTML = String.raw`<!doctype html><html lang="zh"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>自动回复配置</title><style>
+body{font-family:system-ui,-apple-system,sans-serif;max-width:760px;margin:0 auto;padding:16px;background:#f6f7fb;color:#222}
+h1{font-size:20px;margin:4px 0 14px}
+.card{background:#fff;border-radius:12px;padding:16px 18px;margin-bottom:14px;box-shadow:0 1px 4px rgba(0,0,0,.06)}
+h2{font-size:15px;margin:0 0 10px}
+.row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:8px 0}
+label{font-size:14px;color:#333}
+input[type=text],input[type=number]{padding:7px 9px;border:1px solid #ddd;border-radius:8px;font-size:13px}
+input.w-match{width:150px}input.w-reply{flex:1;min-width:220px}
+select{padding:7px 6px;border:1px solid #ddd;border-radius:8px;font-size:13px;background:#fff}
+textarea{width:100%;box-sizing:border-box;min-height:110px;padding:8px;border:1px solid #ddd;border-radius:8px;font-size:13px;font-family:ui-monospace,monospace}
+button{border:0;border-radius:8px;padding:7px 14px;cursor:pointer;background:#4f6ef7;color:#fff;font-size:13px}
+button.gray{background:#8a8f9c}button.danger{background:#e5484d}
+.kw{display:flex;gap:8px;align-items:flex-start;padding:8px 0;border-bottom:1px dashed #eee}
+.tag{font-size:12px;padding:2px 8px;border-radius:6px;background:#eef;color:#345}
+.muted{color:#888;font-size:12px}
+.toast{position:fixed;top:14px;right:14px;background:#222;color:#fff;padding:10px 14px;border-radius:8px;font-size:13px;z-index:99}
+.toast.err{background:#c0392b}
+</style></head><body>
+<h1>QQ 自动回复配置</h1>
+<div class="card"><h2>总开关</h2><label><input type="checkbox" id="enabled"> 启用自动回复</label><p class="muted">关闭后私聊与群聊都不再自动回复。</p></div>
+<div class="card"><h2>私聊</h2><label><input type="checkbox" id="pv-enabled"> 私聊自动回复</label><div class="row"><label>兜底话术</label><input type="text" id="pv-default" class="w-reply" placeholder="未命中关键词时的回复，留空=不回复"></div></div>
+<div class="card"><h2>关键词规则</h2><p class="muted">每行一条：匹配词 + 类型（包含/前缀/正则）+ 回复话术。正则示例：^有.+ 或 下载|安装。</p><div id="kw-list"></div><div class="row"><button class="gray" id="kw-add">+ 添加规则</button></div></div>
+<div class="card"><h2>群聊</h2><div class="row"><label><input type="checkbox" id="gr-enabled"> 开启群消息自动回复</label><label><input type="checkbox" id="gr-atonly"> 仅被 @ 时回复</label></div><div class="row"><label>冷却（秒）</label><input type="number" id="cooldown" class="w-match" min="0"> <label>延迟(ms)</label><input type="number" id="delay-min" class="w-match" min="0"> ~ <input type="number" id="delay-max" class="w-match" min="0"></div><p class="muted">冷却：同一人触发同一规则的最短间隔；延迟：回复前随机等待，拟人防风控。</p></div>
+<div class="card"><h2>群级规则（可选）</h2><p class="muted">JSON：键为群号，值 {enabled, atOnly, keywords}。示例：{"597649304":{"enabled":true,"atOnly":false,"keywords":[{"match":"下载","matchType":"contains","reply":"去 apks.cc 搜"}]}}</p><textarea id="grules" spellcheck="false"></textarea></div>
+<div class="row"><button id="save">保存配置</button></div>
+<script>
+var cfg = null;
+function toast(msg, err){ var d=document.createElement('div'); d.className='toast'+(err?' err':''); d.textContent=msg; document.body.appendChild(d); setTimeout(function(){ d.remove(); }, 3000); }
+function el(id){ return document.getElementById(id); }
+function esc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+function rowHtml(k, i){
+  var type = k.matchType || 'contains';
+  var sel = '<select class="kw-type"><option value="contains"' + (type==='prefix'||type==='regex'?'':' selected') + '>包含</option><option value="prefix"' + (type==='prefix'?' selected':'') + '>前缀</option><option value="regex"' + (type==='regex'?' selected':'') + '>正则</option></select>';
+  return '<div class="kw" data-i="' + i + '"><input type="text" class="kw-match w-match" value="' + esc(k.match) + '" placeholder="匹配词/正则">' + sel + '<input type="text" class="kw-reply w-reply" value="' + esc(k.reply) + '" placeholder="回复话术"><button class="danger kw-del">删除</button></div>';
+}
+function renderKeywords(){
+  var host = el('kw-list'); host.innerHTML = '';
+  (cfg.keywords||[]).forEach(function(k,i){ host.insertAdjacentHTML('beforeend', rowHtml(k,i)); });
+}
+function render(){
+  el('enabled').checked = !!cfg.enabled;
+  el('pv-enabled').checked = !!(cfg.private && cfg.private.enabled);
+  el('pv-default').value = (cfg.private && cfg.private.defaultReply) || '';
+  el('gr-enabled').checked = !!(cfg.group && cfg.group.enabled);
+  el('gr-atonly').checked = !!cfg.atOnly;
+  el('cooldown').value = cfg.cooldownSeconds != null ? cfg.cooldownSeconds : 30;
+  el('delay-min').value = cfg.replyDelayMinMs != null ? cfg.replyDelayMinMs : 300;
+  el('delay-max').value = cfg.replyDelayMaxMs != null ? cfg.replyDelayMaxMs : 1200;
+  el('grules').value = JSON.stringify(cfg.groupRules || {}, null, 2);
+  renderKeywords();
+}
+async function load(){
+  try { var r = await fetch('/plugin/napcat-plugin-autoreply/api/config'); var j = await r.json(); cfg = j.data || j; render(); }
+  catch(e){ toast('加载失败: ' + e, true); }
+}
+function collect(){
+  var rows = [].slice.call(document.querySelectorAll('#kw-list .kw'));
+  var keywords = [];
+  rows.forEach(function(row){
+    var m = row.querySelector('.kw-match').value.trim();
+    var t = row.querySelector('.kw-type').value;
+    var rep = row.querySelector('.kw-reply').value.trim();
+    if (!m || !rep) return;
+    if (t === 'regex') { try { new RegExp(m); } catch(e){ throw new Error('正则无效: ' + m); } }
+    keywords.push({ match: m, matchType: t, reply: rep });
+  });
+  if (!keywords.length) throw new Error('至少保留一条关键词规则');
+  var grules = {};
+  try { grules = JSON.parse(el('grules').value || '{}'); } catch(e){ throw new Error('群级规则 JSON 无效'); }
+  var next = Object.assign({}, cfg, {
+    enabled: el('enabled').checked,
+    keywords: keywords,
+    keywordsText: keywords.map(function(k){ return k.match + '|' + k.matchType + '|' + k.reply; }).join(String.fromCharCode(10)),
+    private: Object.assign({}, cfg.private, { enabled: el('pv-enabled').checked, defaultReply: el('pv-default').value.trim() }),
+    group: Object.assign({}, cfg.group, { enabled: el('gr-enabled').checked }),
+    atOnly: el('gr-atonly').checked,
+    cooldownSeconds: Number(el('cooldown').value || 0),
+    replyDelayMinMs: Number(el('delay-min').value || 0),
+    replyDelayMaxMs: Number(el('delay-max').value || 0),
+    groupRules: grules
+  });
+  delete next.groupRulesText;
+  return next;
+}
+async function save(){
+  try {
+    var payload = collect();
+    var r = await fetch('/plugin/napcat-plugin-autoreply/api/config', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+    var j = await r.json();
+    if (j.code !== 0 && !j.ok) throw new Error(j.message || '保存失败');
+    toast('已保存');
+    await load();
+  } catch(e){ toast(String(e.message || e), true); }
+}
+el('save').addEventListener('click', save);
+document.addEventListener('click', function(e){
+  if (e.target.classList.contains('kw-del')) { var row=e.target.closest('.kw'); var i=Number(row.getAttribute('data-i')); cfg.keywords.splice(i,1); renderKeywords(); }
+  if (e.target.id === 'kw-add') { cfg.keywords = cfg.keywords || []; cfg.keywords.push({ match:'', matchType:'contains', reply:'' }); renderKeywords(); }
+});
+load();
+</script></body></html>`;
+
 function registerWebUI(ctx: NapCatPluginContext): void {
     const router = ctx.router;
 
@@ -186,6 +293,18 @@ function registerWebUI(ctx: NapCatPluginContext): void {
 
     // 注册仪表盘页面（显示在 NapCat WebUI 侧边栏）
     // 访问路径: /plugin/<plugin-id>/page/dashboard
+    try {
+        fs.writeFileSync(path.join(ctx.pluginPath, 'settings.html'), SETTINGS_PAGE_HTML);
+        router.page({
+            path: 'settings',
+            title: '自动回复配置',
+            htmlFile: 'settings.html',
+            description: '本账号私聊/群聊/关键词规则配置页',
+        });
+    } catch (e) {
+        ctx.logger.warn('注册自动回复配置页失败:', e);
+    }
+
     router.page({
         path: 'dashboard',
         title: '插件仪表盘',

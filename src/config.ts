@@ -86,7 +86,7 @@ export function buildConfigSchema(ctx: NapCatPluginContext): PluginConfigSchema 
         ctx.NapCatConfig.boolean('private.enabled', '私聊自动回复', false, '开启后私聊消息触发自动回复'),
         ctx.NapCatConfig.text('private.defaultReply', '私聊兜底回复', '【自动回复】我现在不在，稍后回复你。', '未命中关键词时的默认回复'),
         ctx.NapCatConfig.html('<div style="margin:12px 0 4px;font-weight:600;font-size:14px;">关键词规则</div>'),
-        ctx.NapCatConfig.text('keywordsText', '关键词规则列表', keywordsToText(DEFAULT_CONFIG.keywords), '每行一条:匹配词|类型|回复。类型 prefix=前缀匹配,contains=包含匹配。回复内容中可含 |'),
+        ctx.NapCatConfig.text('keywordsText', '关键词规则列表', keywordsToText(DEFAULT_CONFIG.keywords), '每行一条:匹配词|类型|回复。类型 prefix=前缀匹配,contains=包含匹配,regex=正则匹配(如 ^有.+/i 不需要写 /i)。回复内容中可含 |'),
         ctx.NapCatConfig.html('<div style="margin:12px 0 4px;font-weight:600;font-size:14px;">群聊设置</div>'),
         ctx.NapCatConfig.boolean('group.enabled', '群聊自动回复', true, '开启后群聊消息触发自动回复'),
         ctx.NapCatConfig.boolean('debug', '调试模式', false, '输出详细日志'),

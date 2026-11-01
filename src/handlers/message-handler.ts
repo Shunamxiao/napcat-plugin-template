@@ -70,7 +70,14 @@ function matchKeywords(keywords: KeywordRule[], text: string): KeywordRule | nul
     for (const rule of keywords) {
         const m = (rule.match || '').trim();
         if (!m) continue;
-        const hit = rule.matchType === 'prefix' ? text.startsWith(m) : text.includes(m);
+        let hit = false;
+        if (rule.matchType === 'regex') {
+            if (m.length <= 300) {
+                try { hit = new RegExp(m, 'i').test(text); } catch { hit = false; }
+            }
+        } else {
+            hit = rule.matchType === 'prefix' ? text.startsWith(m) : text.includes(m);
+        }
         if (hit) return rule;
     }
     return null;

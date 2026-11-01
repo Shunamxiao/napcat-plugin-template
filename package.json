@@ -19,7 +19,7 @@
     ],
     "minVersion": "4.14.0",
     "homepage": "",
-    "settingsPage": "dashboard"
+    "settingsPage": "settings"
   },
   "dependencies": {
     "napcat-types": "0.0.16"

@@ -7,7 +7,7 @@ export interface KeywordRule {
     /** 匹配文本 */
     match: string;
     /** 匹配方式：contains(包含,默认) | prefix(前缀) */
-    matchType?: "contains" | "prefix";
+    matchType?: "contains" | "prefix" | "regex";
     /** 回复内容 */
     reply: string;
 }

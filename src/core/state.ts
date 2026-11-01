@@ -27,7 +27,7 @@ function sanitizeKeywordRule(raw: unknown): KeywordRule | null {
     if (!isObject(raw)) return null;
     if (typeof raw.match !== 'string' || typeof raw.reply !== 'string') return null;
     if (!raw.match.trim() || !raw.reply.trim()) return null;
-    return { match: raw.match, matchType: raw.matchType === 'prefix' ? 'prefix' : 'contains', reply: raw.reply };
+    return { match: raw.match, matchType: raw.matchType === 'prefix' ? 'prefix' : raw.matchType === 'regex' ? 'regex' : 'contains', reply: raw.reply };
 }
 
 /** 清洗群级规则表:键为群号,逐字段校验,非法条目直接丢弃 */
