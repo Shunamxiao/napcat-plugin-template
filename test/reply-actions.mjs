@@ -24,6 +24,7 @@ import {
   getCollect,
   isGroupConfigured,
   keywordsToText,
+  notifyHandoff,
   planReply,
   resolveGroupFallback,
   resolveGroupPolicy,
@@ -218,8 +219,79 @@ test("collect/relay 配置缺省值：关闭追问、无题、relay 令牌为空
   });
 });
 
-test("human 留档写入 JSONL", () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "handoff-"));
+test("notifyHandoff：上报 /handoff，带 collected 与鉴权头", async () => {
+  const calls = [];
+  const ok = await notifyHandoff(
+    { enabled: true, baseUrl: "https://svc.test", token: "tok", timeoutMs: 1000 },
+    {
+      userId: "u1",
+      groupId: "928013991",
+      text: "我要投诉",
+      collected: [{ q: "哪个游戏？", a: "原神" }],
+      reason: "keyword_human",
+    },
+    async (url, init) => {
+      calls.push({ url, init });
+      return { ok: true, json: async () => ({ ok: true }) };
+    },
+  );
+  assert.equal(ok, true);
+  assert.equal(calls[0].url, "https://svc.test/handoff");
+  assert.equal(calls[0].init.method, "POST");
+  assert.equal(calls[0].init.headers["x-bot-token"], "tok");
+  assert.deepEqual(JSON.parse(calls[0].init.body), {
+    userId: "u1",
+    groupId: "928013991",
+    text: "我要投诉",
+    reason: "keyword_human",
+    collected: [{ q: "哪个游戏？", a: "原神" }],
+  });
+});
+
+test("notifyHandoff：无 collected 不上传空数组；失败/异常一律 false 不抛", async () => {
+  let body;
+  const ok = await notifyHandoff(
+    { enabled: true, baseUrl: "https://svc.test/", token: "tok", timeoutMs: 1000 },
+    { userId: "u2", text: "在吗", reason: "keyword_human" },
+    async (url, init) => {
+      body = JSON.parse(init.body);
+      return { ok: true, json: async () => ({ ok: true }) };
+    },
+  );
+  assert.equal(ok, true);
+  assert.equal("collected" in body, false);
+  assert.equal("groupId" in body, false);
+
+  const denied = await notifyHandoff(
+    { enabled: true, baseUrl: "https://svc.test", token: "tok", timeoutMs: 1000 },
+    { userId: "u2", text: "在吗", reason: "keyword_human" },
+    async () => ({ ok: false, json: async () => ({ error: "unauthorized" }) }),
+  );
+  assert.equal(denied, false);
+
+  const broken = await notifyHandoff(
+    { enabled: true, baseUrl: "https://svc.test", token: "tok", timeoutMs: 1000 },
+    { userId: "u2", text: "在吗", reason: "keyword_human" },
+    async () => {
+      throw new Error("ECONNREFUSED");
+    },
+  );
+  assert.equal(broken, false);
+
+  let called = false;
+  const noToken = await notifyHandoff(
+    { enabled: true, baseUrl: "https://svc.test", token: "", timeoutMs: 1000 },
+    { userId: "u2", text: "在吗", reason: "keyword_human" },
+    async () => {
+      called = true;
+      return { ok: true, json: async () => ({ ok: true }) };
+    },
+  );
+  assert.equal(noToken, false);
+  assert.equal(called, false);
+});
+
+test("human 留档写入 JSONL", () => {  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "handoff-"));
   const file = path.join(dir, "handoff.jsonl");
   const ok = appendHandoffRecord(file, {
     ts: new Date().toISOString(),

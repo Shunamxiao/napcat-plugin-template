@@ -522,4 +522,5 @@ export { beginCollect, clearCollect, collectKey, getCollect, stepCollect, COLLEC
 export { keywordsToText, textToKeywords } from './config';
 export { resolveWelcome } from './handlers/event-handler';
 export { handleMessage } from './handlers/message-handler';
+export { notifyHandoff } from './services/kb-client';
 export { sanitizeConfig, pluginState } from './core/state';

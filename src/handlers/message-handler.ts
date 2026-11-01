@@ -20,7 +20,7 @@ import {
     type CollectAnswer,
     type CollectSession,
 } from '../core/collect';
-import { askService } from '../services/kb-client';
+import { askService, notifyHandoff } from '../services/kb-client';
 import type { KeywordRule } from '../types';
 import fs from 'fs';
 import path from 'path';
@@ -60,7 +60,9 @@ export async function handleMessage(ctx: NapCatPluginContext, event: OB11Message
     if (kind !== 'private' && kind !== 'group') return;
 
     const senderId = String(event.sender?.user_id ?? 0);
-    const selfId = String(ctx.pluginManager.config?.self_id ?? '');
+    // self_id 优先取事件本身，其次取 init 时 get_login_info 的结果。
+    // ctx.pluginManager.config 里不保证有 self_id（历史 bug：取不到导致 atBot 恒为 false，群 @ 被静默）。
+    const selfId = String(event.self_id || pluginState.selfId || ctx.pluginManager.config?.self_id || '');
 
     // 不回复自己
     if (senderId === selfId || senderId === '0') return;
@@ -98,6 +100,7 @@ export async function handleMessage(ctx: NapCatPluginContext, event: OB11Message
         if (plan.kind === 'rule-human') {
             if (startCollect(ctx, event, senderId, undefined, text, plan.rule.match, 'private')) return;
             recordHandoff({ userId: senderId, text, rule: plan.rule.match, kind: 'private' });
+            reportHandoff({ userId: senderId, text });
         }
         const out = resolveSend({
             plan,
@@ -112,17 +115,23 @@ export async function handleMessage(ctx: NapCatPluginContext, event: OB11Message
 
     // 群聊：只有 groupRules 里配置过的群才处理，未配置群一律静默（含 @）
     if (kind === 'group') {
-        if (!config.group.enabled) return;
         const groupId = String(event.group_id ?? '');
-        if (!checkWhitelist(config.group.whitelist, groupId)) return;
+        const atBot = isDirectedAtBot(event, selfId);
+        // 每个提前返回都留原因码：@ 消息用 info（排障必看），非 @ 用 debug（群消息量大）
+        const skip = (reason: string, detail = '') => {
+            const line = '[群聊] 跳过 group=' + groupId + ' reason=' + reason + (detail ? ' ' + detail : '');
+            if (atBot) pluginState.logger.info(line);
+            else pluginState.logger.debug(line);
+        };
+        if (!config.group.enabled) { skip('群聊总开关关闭'); return; }
+        if (!checkWhitelist(config.group.whitelist, groupId)) { skip('群白名单外'); return; }
         const groupRule = config.groupRules?.[groupId];
-        if (!isGroupConfigured(config, groupId) || !groupRule) return;
+        if (!isGroupConfigured(config, groupId) || !groupRule) { skip('未配置群'); return; }
         const policy = resolveGroupPolicy(config, groupId);
-        if (!policy.enabled.value) return;
+        if (!policy.enabled.value) { skip('群已禁用'); return; }
         // 追问中的用户消息优先作为答案消费；不要求 @，否则群内无法回答
         if (await consumeCollectAnswer(ctx, event, collectKey('group', senderId, groupId), senderId, groupId, text, 'group')) return;
-        const atBot = isDirectedAtBot(event, selfId);
-        if (policy.atOnly.value && !atBot) return;
+        if (policy.atOnly.value && !atBot) { skip('未@且该群仅@触发', 'selfId=' + (selfId || '-')); return; }
         // 群专属关键词非空时只按群规则匹配,避免全局规则串群
         const keywords = groupRule.keywords?.length ? groupRule.keywords : config.keywords;
         const hit = matchKeywords(keywords, text);
@@ -137,14 +146,15 @@ export async function handleMessage(ctx: NapCatPluginContext, event: OB11Message
             aiTrigger: { private: config.aiTrigger.private, groupAtOnly: true },
             groupAiEnabled: policy.aiEnabled.value,
         });
-        if (plan.kind === 'blocked') return;
-        if (isRuleCooldown(senderId, plan)) return;
+        if (plan.kind === 'blocked') { skip('服务侧拉黑'); return; }
+        if (isRuleCooldown(senderId, plan)) { skip('规则冷却', 'rule=' + plan.rule.match); return; }
         // 多账号同群去重:规则回复与 AI 回复都只允许一个实例发
-        if (!tryClaimReply(String(event.message_id ?? ''), groupId)) return;
+        if (!tryClaimReply(String(event.message_id ?? ''), groupId)) { skip('去重命中'); return; }
         const ask = needsAsk(plan) ? await askKnowledge(text, senderId, groupId, 'group_at') : null;
         if (plan.kind === 'rule-human') {
             if (startCollect(ctx, event, senderId, groupId, text, plan.rule.match, 'group')) return;
             recordHandoff({ userId: senderId, groupId, text, rule: plan.rule.match, kind: 'group' });
+            reportHandoff({ userId: senderId, groupId, text });
         }
         const fallback = resolveGroupFallback(config, groupId);
         const out = resolveSend({
@@ -154,7 +164,12 @@ export async function handleMessage(ctx: NapCatPluginContext, event: OB11Message
             atBot,
             groupFallback: fallback.groupAtText,
         });
-        if (!out.send || (!out.text && !out.image)) return;
+        if (!out.send || (!out.text && !out.image)) {
+            const reason = plan.kind === 'none' && !atBot ? '未@且未命中规则(静默)' : '无可发送内容';
+            skip(reason, 'kind=' + plan.kind + ' atBot=' + atBot + ' selfId=' + (selfId || '-') +
+                ' 兜底=' + (fallback.groupAtText ? '有' : '空'));
+            return;
+        }
         scheduleReply(ctx, event, { text: out.text || '', image: out.image }, '[群聊] ' + groupId + sourceTag(out.source));
     }
 }
@@ -259,6 +274,13 @@ function finalizeCollect(
         collected: session.answers,
         reason,
     });
+    // 追问结果（可能为空）随转人工一起上报服务侧
+    reportHandoff({
+        userId: session.userId,
+        groupId: session.groupId,
+        text: session.triggerText,
+        collected: session.answers,
+    });
     if (fallback && answerEvent && groupActive) {
         scheduleReply(ctx, answerEvent, { text: fallback }, '[转人工] ' + session.userId);
     }
@@ -295,6 +317,36 @@ function recordHandoff(args: {
         ' collected=' + JSON.stringify(collected),
     );
     if (!ok) pluginState.logger.warn('[转人工] 留档写入失败: ' + file);
+}
+
+/**
+ * 把转人工上报到服务侧：服务端留档 + Telegram 通知，人工可在 Telegram 直接回复用户。
+ * 不 await —— 通知通道再慢也不能拖住给用户的兜底回复；失败只记日志。
+ */
+function reportHandoff(args: {
+    userId: string;
+    groupId?: string;
+    text: string;
+    collected?: CollectAnswer[];
+}): void {
+    const cfg = pluginState.config.kbService;
+    if (!cfg?.enabled) {
+        pluginState.logger.debug('[转人工] kbService 未启用，跳过 /handoff 上报');
+        return;
+    }
+    // 群 @ 的 raw_message 带 CQ 码，去掉后再发给服务和 Telegram，避免通知正文含 [CQ:at,...]
+    const text = cleanTextForAi(args.text);
+    if (!text) return;
+    const where = args.groupId ? 'group=' + args.groupId : 'private';
+    void notifyHandoff(cfg, {
+        userId: args.userId,
+        groupId: args.groupId,
+        text,
+        collected: args.collected,
+        reason: 'keyword_human',
+    }).then((ok) => {
+        if (!ok) pluginState.logger.warn('[转人工] /handoff 上报失败 ' + where + ' user=' + args.userId);
+    });
 }
 
 /** 日志后缀:区分规则回复与 AI 回复,便于排查 */
@@ -374,13 +426,18 @@ function isOnCooldown(senderId: string, ruleKey: string): boolean {
 
 /** 群消息是否指向机器人:@ 段目标为自身 QQ,或 reply 段(部分适配器会带原发送者 qq) */
 function isDirectedAtBot(event: OB11Message, selfId: string): boolean {
-    if (!selfId || !Array.isArray(event.message)) return false;
-    return event.message.some((seg) => {
-        const data = seg.data as Record<string, unknown> | undefined;
-        if (seg.type === 'at') return String(data?.qq ?? '') === selfId;
-        if (seg.type === 'reply') return String(data?.qq ?? '') === selfId;
-        return false;
-    });
+    if (!selfId) return false;
+    if (Array.isArray(event.message)) {
+        return event.message.some((seg) => {
+            const data = seg.data as Record<string, unknown> | undefined;
+            if (seg.type === 'at') return String(data?.qq ?? '') === selfId;
+            if (seg.type === 'reply') return String(data?.qq ?? '') === selfId;
+            return false;
+        });
+    }
+    // 少数适配器把 message 下发成 CQ 字符串，退回 raw_message 匹配，避免 @ 判定失效
+    const raw = typeof event.raw_message === 'string' ? event.raw_message : '';
+    return new RegExp('\\[CQ:(?:at|reply),qq=' + selfId + '(?:,|\\])').test(raw);
 }
 
 /** 按配置的随机延迟安排回复,拟人化防风控;延迟为 0 时立即发送 */

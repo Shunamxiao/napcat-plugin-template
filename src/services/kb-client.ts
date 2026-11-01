@@ -22,6 +22,16 @@ export interface AskResponse {
     score?: number;
 }
 
+export interface HandoffRequest {
+    userId: string;
+    groupId?: string;
+    text: string;
+    /** 转人工追问答案；非空时才随请求上传 */
+    collected?: { q: string; a: string }[];
+    /** 转人工原因，默认 keyword_human */
+    reason: string;
+}
+
 export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
 const MIN_TIMEOUT_MS = 500;
@@ -92,6 +102,37 @@ export async function askService(
         action: typeof data.action === 'string' ? data.action : 'unknown',
         score: typeof data.score === 'number' ? data.score : undefined,
     };
+}
+
+/**
+ * 上报一次转人工给服务侧（服务端 JSONL 留档 + Telegram 通知）。
+ * 成功返回 true；未配置(缺 baseUrl/token)、网络失败、非 2xx、响应非 JSON 一律 false。
+ * 绝不抛异常：调用方按「失败只记日志、不影响给用户回话」处理。
+ */
+export async function notifyHandoff(
+    cfg: KbServiceConfig,
+    req: HandoffRequest,
+    fetchImpl: FetchLike = fetch,
+): Promise<boolean> {
+    const body: Record<string, unknown> = {
+        userId: req.userId,
+        text: req.text,
+        reason: req.reason,
+    };
+    if (req.groupId) body.groupId = req.groupId;
+    if (req.collected && req.collected.length > 0) body.collected = req.collected;
+
+    const data = await requestJson(
+        cfg,
+        '/handoff',
+        {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', 'x-bot-token': String(cfg.token || '') },
+            body: JSON.stringify(body),
+        },
+        fetchImpl,
+    );
+    return data !== null;
 }
 
 /**
