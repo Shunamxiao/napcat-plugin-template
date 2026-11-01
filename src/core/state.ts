@@ -25,9 +25,21 @@ function isObject(v: unknown): v is Record<string, unknown> {
 /** 清洗单条关键词规则,结构或内容非法时返回 null */
 function sanitizeKeywordRule(raw: unknown): KeywordRule | null {
     if (!isObject(raw)) return null;
-    if (typeof raw.match !== 'string' || typeof raw.reply !== 'string') return null;
-    if (!raw.match.trim() || !raw.reply.trim()) return null;
-    const rule: KeywordRule = { match: raw.match, matchType: raw.matchType === 'prefix' ? 'prefix' : raw.matchType === 'regex' ? 'regex' : 'contains', reply: String(raw.reply ?? '') };
+    if (typeof raw.match !== 'string' || !raw.match.trim()) return null;
+    const reply = typeof raw.reply === 'string' ? raw.reply.trim() : '';
+    const replies = Array.isArray(raw.replies)
+        ? raw.replies
+            .filter((item): item is string => typeof item === 'string')
+            .map((item) => item.trim())
+            .filter(Boolean)
+        : [];
+    if (!reply && replies.length === 0) return null;
+    const rule: KeywordRule = {
+        match: raw.match,
+        matchType: raw.matchType === 'prefix' ? 'prefix' : raw.matchType === 'regex' ? 'regex' : 'contains',
+        reply: reply || replies[0] || '',
+    };
+    if (replies.length > 0) rule.replies = replies;
     if (typeof raw.image === 'string' && raw.image.trim()) rule.image = raw.image.trim();
     return rule;
 }
@@ -65,6 +77,18 @@ export function sanitizeConfig(raw: unknown): PluginConfig {
     if (typeof raw.replyDelayMinMs === 'number' && raw.replyDelayMinMs >= 0) out.replyDelayMinMs = raw.replyDelayMinMs;
     if (typeof raw.replyDelayMaxMs === 'number' && raw.replyDelayMaxMs >= 0) out.replyDelayMaxMs = raw.replyDelayMaxMs;
     if (typeof raw.atOnly === 'boolean') out.atOnly = raw.atOnly;
+    if (typeof raw.atReply === 'boolean') out.atReply = raw.atReply;
+    if (isObject(raw.groupWelcome)) {
+        out.groupWelcome = {
+            enabled: typeof raw.groupWelcome.enabled === 'boolean' ? raw.groupWelcome.enabled : (out.groupWelcome?.enabled ?? false),
+            template: typeof raw.groupWelcome.template === 'string' ? raw.groupWelcome.template : (out.groupWelcome?.template ?? ''),
+        };
+    }
+    if (isObject(raw.friendRequest)) {
+        out.friendRequest = {
+            autoAccept: typeof raw.friendRequest.autoAccept === 'boolean' ? raw.friendRequest.autoAccept : (out.friendRequest?.autoAccept ?? false),
+        };
+    }
     if (typeof raw.crossAccountDedup === 'boolean') out.crossAccountDedup = raw.crossAccountDedup;
     if (typeof raw.keywordsText === 'string') out.keywordsText = raw.keywordsText;
     if (typeof raw.blacklistText === 'string') out.blacklistText = raw.blacklistText;
@@ -303,6 +327,19 @@ class PluginState {
         const merged = { ...this.config, ...partial };
         if (partial.private) merged.private = { ...this.config.private, ...partial.private };
         if (partial.group) merged.group = { ...this.config.group, ...partial.group };
+        if (partial.groupWelcome) {
+            merged.groupWelcome = {
+                enabled: this.config.groupWelcome?.enabled ?? false,
+                template: this.config.groupWelcome?.template ?? '',
+                ...partial.groupWelcome,
+            };
+        }
+        if (partial.friendRequest) {
+            merged.friendRequest = {
+                autoAccept: this.config.friendRequest?.autoAccept ?? false,
+                ...partial.friendRequest,
+            };
+        }
         // 群级规则文本:合法 JSON 才覆盖结构化规则,非法文本忽略
         if (typeof partial.groupRulesText === 'string') {
             const parsed = textToGroupRules(partial.groupRulesText);

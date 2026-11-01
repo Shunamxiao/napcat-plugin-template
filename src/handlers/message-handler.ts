@@ -66,7 +66,7 @@ export async function handleMessage(ctx: NapCatPluginContext, event: OB11Message
         const hit = matchKeywords(config.keywords, text);
         if (hit) {
             if (!isOnCooldown(senderId, hit.match)) {
-                scheduleReply(ctx, event, { text: hit.reply, image: hit.image }, '[私聊] ' + senderId);
+                scheduleReply(ctx, event, { text: pickReply(hit), image: hit.image }, '[私聊] ' + senderId);
             }
         } else if (config.private.defaultReply && !isOnCooldown(senderId, DEFAULT_REPLY_RULE_KEY)) {
             scheduleReply(ctx, event, { text: config.private.defaultReply }, '[私聊] ' + senderId + ' 兜底');
@@ -88,7 +88,7 @@ export async function handleMessage(ctx: NapCatPluginContext, event: OB11Message
         const keywords = groupRule?.keywords?.length ? groupRule.keywords : config.keywords;
         const hit = matchKeywords(keywords, text);
         if (hit && !isOnCooldown(senderId, hit.match) && tryClaimReply(String(event.message_id ?? ''), groupId)) {
-            scheduleReply(ctx, event, { text: hit.reply, image: hit.image }, '[群聊] ' + groupId);
+            scheduleReply(ctx, event, { text: pickReply(hit), image: hit.image }, '[群聊] ' + groupId);
         }
     }
 }
@@ -109,6 +109,17 @@ function matchKeywords(keywords: KeywordRule[], text: string): KeywordRule | nul
         if (hit) return rule;
     }
     return null;
+}
+
+/** 从回复池随机取一条；replies 为空时回退到 reply */
+export function pickReply(rule: KeywordRule): string {
+    if (Array.isArray(rule.replies)) {
+        const pool = rule.replies.filter((item) => typeof item === 'string' && item.trim());
+        if (pool.length > 0) {
+            return pool[Math.floor(Math.random() * pool.length)];
+        }
+    }
+    return rule.reply || '';
 }
 
 /** 同一用户+同一规则的冷却检查;未冷却时记录本次命中时间 */
@@ -196,7 +207,20 @@ function resolveImageSource(raw: string): string | null {
 }
 async function replyMessage(ctx: NapCatPluginContext, event: OB11Message, content: { text: string; image?: string }): Promise<void> {
     const segments: Array<Record<string, unknown>> = [];
-    if (content.text) segments.push({ type: "text", data: { text: content.text } });
+    // 群聊 @ 回复：at 段后补一个空格，避免正文与 @ 粘连
+    let atAdded = false;
+    if (event.message_type === "group" && event.group_id && pluginState.config.atReply) {
+        const senderId = String(event.sender?.user_id ?? event.user_id ?? '');
+        if (senderId && senderId !== '0') {
+            segments.push({ type: "at", data: { qq: senderId } });
+            atAdded = true;
+        }
+    }
+    if (content.text) {
+        segments.push({ type: "text", data: { text: atAdded ? ' ' + content.text : content.text } });
+    } else if (atAdded) {
+        segments.push({ type: "text", data: { text: " " } });
+    }
     if (content.image) {
         const src = resolveImageSource(content.image);
         if (src) segments.push({ type: "image", data: { file: src } });

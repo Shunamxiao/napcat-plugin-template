@@ -6,10 +6,12 @@
 export interface KeywordRule {
     /** 匹配文本 */
     match: string;
-    /** 匹配方式：contains(包含,默认) | prefix(前缀) */
+    /** 匹配方式：contains(包含,默认) | prefix(前缀) | regex(正则) */
     matchType?: "contains" | "prefix" | "regex";
-    /** 回复内容 */
+    /** 回复内容；replies 非空时作为兜底 */
     reply: string;
+    /** 回复池：非空时随机选一条发送，优先于 reply */
+    replies?: string[];
     /** 可选:随回复发送的图片(URL / base64://xxx / 容器内绝对路径) */
     image?: string;
 }
@@ -44,6 +46,20 @@ export interface GroupRule {
     keywords?: KeywordRule[];
 }
 
+/** 入群欢迎配置 */
+export interface GroupWelcomeConfig {
+    /** 是否启用入群欢迎 */
+    enabled: boolean;
+    /** 欢迎语模板，支持 {group_id} / {user_id} 占位符 */
+    template: string;
+}
+
+/** 好友申请处理配置 */
+export interface FriendRequestConfig {
+    /** 是否自动通过好友申请（默认关闭，注意风控） */
+    autoAccept: boolean;
+}
+
 export interface PluginConfig {
     enabled: boolean;
     debug: boolean;
@@ -60,6 +76,12 @@ export interface PluginConfig {
     replyDelayMaxMs: number;
     /** 群聊是否仅被 @ 时才回复 */
     atOnly: boolean;
+    /** 群聊回复时是否在消息前 @ 触发者（默认 false） */
+    atReply?: boolean;
+    /** 入群欢迎 */
+    groupWelcome?: GroupWelcomeConfig;
+    /** 好友申请处理 */
+    friendRequest?: FriendRequestConfig;
     /** 各群独立启用配置(群管理页使用) */
     groupConfigs: Record<string, GroupConfig>;
     /** 群级规则：键为群号，未配置的群沿用全局规则 */

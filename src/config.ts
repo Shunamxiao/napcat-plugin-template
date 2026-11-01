@@ -6,7 +6,7 @@ import type { NapCatPluginContext, PluginConfigSchema } from 'napcat-types/napca
 import type { GroupRule, KeywordRule, PluginConfig } from './types';
 
 
-/** 规则数组 → 多行文本(每行: 匹配词|类型|回复) */
+/** 规则数组 → 多行文本(每行: 匹配词|类型|回复)；多回复池只在扩展配置页维护 */
 export function keywordsToText(kw: KeywordRule[]): string {
     return kw.map((k) => `${k.match}|${k.matchType || 'contains'}|${k.reply}${k.image ? '|' + k.image : ''}`).join('\n');
 }
@@ -56,6 +56,9 @@ export const DEFAULT_CONFIG: PluginConfig = {
     replyDelayMinMs: 300,
     replyDelayMaxMs: 1200,
     atOnly: false,
+    atReply: false,
+    groupWelcome: { enabled: false, template: "欢迎 {user_id} 加入本群！" },
+    friendRequest: { autoAccept: false },
     groupConfigs: {},
     groupRules: {},
     keywords: [
@@ -91,7 +94,7 @@ export function buildConfigSchema(ctx: NapCatPluginContext): PluginConfigSchema 
         ctx.NapCatConfig.boolean('private.enabled', '私聊自动回复', false, '开启后私聊消息触发自动回复'),
         ctx.NapCatConfig.text('private.defaultReply', '私聊兜底回复', '【自动回复】我现在不在，稍后回复你。', '未命中关键词时的默认回复'),
         ctx.NapCatConfig.html('<div style="margin:12px 0 4px;font-weight:600;font-size:14px;">关键词规则</div>'),
-        ctx.NapCatConfig.text('keywordsText', '关键词规则列表', keywordsToText(DEFAULT_CONFIG.keywords), '每行一条:匹配词|类型|回复|图片URL或路径(第4段可选)。类型 prefix/contains/regex'),
+        ctx.NapCatConfig.text('keywordsText', '关键词规则列表', keywordsToText(DEFAULT_CONFIG.keywords), '每行一条:匹配词|类型|回复|图片URL或路径(第4段可选)。类型 prefix/contains/regex。多回复池请在扩展配置页用 ||| 分隔编辑'),
         ctx.NapCatConfig.html('<div style="margin:12px 0 4px;font-weight:600;font-size:14px;">群聊设置</div>'),
         ctx.NapCatConfig.boolean('group.enabled', '群聊自动回复', true, '开启后群聊消息触发自动回复'),
         ctx.NapCatConfig.boolean('debug', '调试模式', false, '输出详细日志'),
@@ -100,7 +103,12 @@ export function buildConfigSchema(ctx: NapCatPluginContext): PluginConfigSchema 
         ctx.NapCatConfig.number('replyDelayMinMs', '回复延迟下限(毫秒)', 300, '回复前随机延迟下限,拟人化行为,降低风控风险'),
         ctx.NapCatConfig.number('replyDelayMaxMs', '回复延迟上限(毫秒)', 1200, '回复前随机延迟上限,需大于等于下限'),
         ctx.NapCatConfig.boolean('atOnly', '群聊仅被 @ 时回复', false, '开启后群聊只有 @ 机器人的消息才会触发自动回复'),
-        ctx.NapCatConfig.text('groupRulesText', '群级规则(JSON)', groupRulesToText(DEFAULT_CONFIG.groupRules), 'JSON 对象，键为群号，值 {enabled,atOnly,keywords:[{match,matchType,reply}]}。未配置的群沿用全局规则；enabled=false 该群不回复；atOnly 覆盖全局；keywords 非空时替代全局关键词。格式错误将被忽略'),
+        ctx.NapCatConfig.text('groupRulesText', '群级规则(JSON)', groupRulesToText(DEFAULT_CONFIG.groupRules), 'JSON 对象，键为群号，值 {enabled,atOnly,keywords:[{match,matchType,reply,replies?}]}。未配置的群沿用全局规则；enabled=false 该群不回复；atOnly 覆盖全局；keywords 非空时替代全局关键词。格式错误将被忽略'),
+        ctx.NapCatConfig.html('<div style="margin:12px 0 4px;font-weight:600;font-size:14px;">机器人能力</div>'),
+        ctx.NapCatConfig.boolean('atReply', '群聊回复时 @ 触发者', false, '开启后群聊自动回复会在消息前 @ 触发者；私聊不受影响'),
+        ctx.NapCatConfig.boolean('groupWelcome.enabled', '入群欢迎', false, '新成员入群时发送欢迎语；独立于自动回复总开关'),
+        ctx.NapCatConfig.text('groupWelcome.template', '入群欢迎模板', DEFAULT_CONFIG.groupWelcome?.template ?? '', '支持 {group_id} 和 {user_id} 占位符'),
+        ctx.NapCatConfig.boolean('friendRequest.autoAccept', '自动通过好友申请', false, '高风险：开启后所有好友申请都会被自动同意，建议仅在小号使用'),
         ctx.NapCatConfig.text('private.whitelistText', '私聊白名单', idListToText(DEFAULT_CONFIG.private.whitelist), '每行一个 QQ 号,# 开头为注释。留空 = 对所有私聊生效;非空 = 仅名单内用户触发'),
         ctx.NapCatConfig.text('group.whitelistText', '群聊白名单(群号)', idListToText(DEFAULT_CONFIG.group.whitelist), '每行一个群号,# 开头为注释。留空 = 对所有群生效;非空 = 仅名单内群触发'),
         ctx.NapCatConfig.text('blacklistText', '黑名单', idListToText(DEFAULT_CONFIG.blacklist), '每行一个 QQ 号,# 开头为注释。名单内的用户不会触发任何自动回复'),
