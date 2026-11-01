@@ -30,7 +30,7 @@ import fs from 'fs';
 import path from 'path';
 
 import { DEFAULT_CONFIG, buildConfigSchema, groupRulesToText, idListToText, keywordsToText, textToGroupRules, textToIdList, textToKeywords } from './config';
-import { pluginState } from './core/state';
+import { maskConfig, pluginState } from './core/state';
 import { startBlocklistSync, stopBlocklistSync } from './core/blocklist';
 import { handleMessage } from './handlers/message-handler';
 import { handleOneBotEvent } from './handlers/event-handler';
@@ -118,7 +118,8 @@ export const plugin_cleanup: PluginModule['plugin_cleanup'] = async (ctx) => {
 
 /** 获取当前配置 */
 export const plugin_get_config: PluginModule['plugin_get_config'] = async (ctx) => {
-    const cfg = pluginState.config;
+    // 出口一律打码：真 token 只留在磁盘配置与请求头里，不进任何响应
+    const cfg = maskConfig(pluginState.config);
     return {
         ...cfg,
         keywordsText: keywordsToText(cfg.keywords),
@@ -303,7 +304,8 @@ function render(){
   var kb = cfg.kbService || {};
   el('kb-enabled').checked = !!kb.enabled;
   el('kb-baseurl').value = kb.baseUrl || 'https://qqbot.theworld.codes';
-  el('kb-token').value = kb.token || '';
+  el('kb-token').value = '';
+  el('kb-token').placeholder = kb.token ? '已配置（••••••），留空不修改' : 'x-bot-token（留空 = 不调用服务）';
   el('kb-timeout').value = kb.timeoutMs != null ? kb.timeoutMs : 8000;
   var at = cfg.aiTrigger || {};
   el('ai-private').checked = at.private !== false;

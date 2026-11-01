@@ -21,7 +21,7 @@ import type {
     PluginHttpRequest,
     PluginHttpResponse
 } from 'napcat-types/napcat-onebot/network/plugin/types';
-import { pluginState } from '../core/state';
+import { maskConfig, pluginState } from '../core/state';
 
 /**
  * 注册 API 路由
@@ -39,7 +39,7 @@ export function registerApiRoutes(ctx: NapCatPluginContext): void {
                 pluginName: ctx.pluginName,
                 uptime: pluginState.getUptime(),
                 uptimeFormatted: pluginState.getUptimeFormatted(),
-                config: pluginState.config,
+                config: maskConfig(pluginState.config),
                 stats: pluginState.stats,
             },
         });
@@ -47,9 +47,9 @@ export function registerApiRoutes(ctx: NapCatPluginContext): void {
 
     // ==================== 配置管理（无鉴权）====================
 
-    /** 获取配置 */
+    /** 获取配置（令牌打码；真 token 绝不下发） */
     router.getNoAuth('/config', (_req, res) => {
-        res.json({ code: 0, data: pluginState.config });
+        res.json({ code: 0, data: maskConfig(pluginState.config) });
     });
 
     /** 保存配置 */

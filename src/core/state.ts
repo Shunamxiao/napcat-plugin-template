@@ -18,6 +18,25 @@ import type { BlockUser, KeywordRule, PluginConfig, GroupConfig, GroupRule } fro
 
 // ==================== 配置清洗工具 ====================
 
+/** 配置回显用的令牌占位符；真 token 绝不下发到任何 HTTP 响应 */
+export const TOKEN_MASK = "••••••";
+
+/** 空串 / 未提交 / 占位符都表示「保持原令牌」，只有新值才覆盖 */
+export function isTokenPlaceholder(value: unknown): boolean {
+    return value === undefined || value === null || value === "" || value === TOKEN_MASK;
+}
+
+/** 返回配置副本，kbService.token 打码；只在序列化出口使用，不回写运行时状态 */
+export function maskConfig(config: PluginConfig): PluginConfig {
+    return {
+        ...config,
+        kbService: {
+            ...config.kbService,
+            token: config.kbService?.token ? TOKEN_MASK : "",
+        },
+    };
+}
+
 function isObject(v: unknown): v is Record<string, unknown> {
     return v !== null && typeof v === 'object' && !Array.isArray(v);
 }
@@ -158,7 +177,7 @@ export function sanitizeConfig(raw: unknown): PluginConfig {
             baseUrl: typeof kb.baseUrl === 'string' && kb.baseUrl.trim()
                 ? kb.baseUrl.trim().replace(/\/+$/, '')
                 : out.kbService.baseUrl,
-            token: typeof kb.token === 'string' ? kb.token.trim() : out.kbService.token,
+            token: typeof kb.token === 'string' && kb.token.trim() !== TOKEN_MASK ? kb.token.trim() : out.kbService.token,
             timeoutMs: clampInt(kb.timeoutMs, 500, 60000, out.kbService.timeoutMs),
         };
     }
@@ -399,7 +418,13 @@ class PluginState {
             if (parsed) merged.groupRules = parsed;
         }
         // 知识库/AI 相关嵌套对象同样先合并旧值，避免部分提交时丢字段
-        if (partial.kbService) merged.kbService = { ...this.config.kbService, ...partial.kbService };
+        if (partial.kbService) {
+            merged.kbService = { ...this.config.kbService, ...partial.kbService };
+            // 空串 / 占位符 / 未提交 = 保持原令牌；只有新值才覆盖
+            if (isTokenPlaceholder(partial.kbService.token)) {
+                merged.kbService.token = this.config.kbService.token;
+            }
+        }
         if (partial.aiTrigger) merged.aiTrigger = { ...this.config.aiTrigger, ...partial.aiTrigger };
         if (partial.blocklist) {
             merged.blocklist = {
@@ -416,7 +441,14 @@ class PluginState {
      * 完整替换配置
      */
     replaceConfig(config: PluginConfig): void {
-        this.config = sanitizeConfig(config);
+        const next: PluginConfig = { ...config };
+        if (!next.kbService) {
+            next.kbService = this.config.kbService;
+        } else if (isTokenPlaceholder(next.kbService.token)) {
+            // 页面/原生配置面板回传的是占位符或空串 → 沿用磁盘上的真令牌
+            next.kbService = { ...next.kbService, token: this.config.kbService.token };
+        }
+        this.config = sanitizeConfig(next);
         this.saveConfig();
     }
 
