@@ -317,6 +317,8 @@ export function sanitizeConfig(raw: unknown): PluginConfig {
             lastSyncedAt: typeof raw.blocklist.lastSyncedAt === 'string' ? raw.blocklist.lastSyncedAt : out.blocklist.lastSyncedAt,
         };
     }
+    // 服务端群配置刷新间隔：30s ~ 1h，坏值回退默认 5 分钟
+    out.groupConfigRefreshMs = clampInt(raw.groupConfigRefreshMs, 30000, 3600000, out.groupConfigRefreshMs ?? 300000);
 
     // 各群独立启用配置
     if (isObject(raw.groupConfigs)) {
@@ -360,6 +362,9 @@ class PluginState {
     /** 服务侧下发的群守卫词表（仅内存缓存；拉取失败保留上次成功结果） */
     serviceGuardWords: string[] = [];
 
+    /** 服务词表最近一次成功同步时间(ISO)；空串 = 尚未成功 */
+    guardWordsSyncedAt: string = '';
+
     /** 服务降级提示记录: user -> 上次发送时间戳（同一用户 10 分钟只提示一次） */
     serviceDownNotified: Map<string, number> = new Map();
 
@@ -368,6 +373,10 @@ class PluginState {
         processed: 0,
         todayProcessed: 0,
         lastUpdateDay: new Date().toDateString(),
+        /** FAQ 命中次数（服务返回了非空答案） */
+        faqHit: 0,
+        /** FAQ 未命中次数（服务失败/空答案） */
+        faqMiss: 0,
     };
 
     /** 获取上下文（确保已初始化） */

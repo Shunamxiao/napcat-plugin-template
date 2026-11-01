@@ -9,7 +9,7 @@
 
 import type { FallbackConfig, GroupRule, PluginConfig } from '../types';
 
-export type PolicySource = 'group' | 'global';
+export type PolicySource = 'group' | 'global' | 'server';
 
 export interface PolicyValue<T> {
     value: T;

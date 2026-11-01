@@ -8,7 +8,9 @@
 import type { OB11Message } from 'napcat-types/napcat-onebot';
 import type { NapCatPluginContext } from 'napcat-types/napcat-onebot/network/plugin/types';
 import { pluginState } from './state';
-import { isGroupConfigured, resolveGroupPolicy } from './policy';
+import { isGroupManaged, resolveEffectiveGroupPolicy, resolveGuardPolicy } from './group-config';
+import { applyGuardPenalty } from './guard-penalty';
+import { hitLog } from './hit-log';
 import type { GuardAction, GuardConfig } from '../types';
 
 /** 本地词表 + 服务词表叠加；本地优先，去重后返回（任一命中即触发） */
@@ -50,8 +52,8 @@ export function guardTargetsGroup(config: GuardConfig | undefined, groupId: stri
     const ids = (config.groupIds ?? []).map(String);
     if (ids.length > 0) return ids.includes(groupId);
     if (pluginState.config.group?.enabled === false) return false;
-    return isGroupConfigured(pluginState.config, groupId) &&
-        resolveGroupPolicy(pluginState.config, groupId).enabled.value;
+    return isGroupManaged(pluginState.config, groupId) &&
+        (resolveEffectiveGroupPolicy(pluginState.config, groupId)?.enabled.value ?? false);
 }
 
 function normalizeAction(action: GuardAction | undefined): GuardAction {
@@ -84,6 +86,7 @@ export async function runGroupGuard(
 
     const user = String(event.sender?.user_id ?? event.user_id ?? '');
     const action = normalizeAction(config.action);
+    const policy = resolveGuardPolicy(config);
     const tag = ' user=' + user + ' rule=' + word + ' group=' + groupId;
 
     if (action === 'recall' || action === 'both') {
@@ -111,28 +114,70 @@ export async function runGroupGuard(
         }
     }
 
-    if (action === 'warn' || action === 'both') {
-        const warnText = String(config.warnText ?? '').trim();
-        if (warnText) {
-            try {
-                await ctx.actions.call(
-                    'send_msg',
-                    {
-                        message_type: 'group',
-                        group_id: groupId,
-                        message: [{ type: 'text', data: { text: warnText } }],
-                    },
-                    ctx.adapterName,
-                    ctx.pluginManager.config,
-                );
-                pluginState.logger.info('[群守卫] reason=guard_warn' + tag);
-            } catch (e) {
-                const message = e instanceof Error ? e.message : String(e ?? '');
-                pluginState.logger.warn('[群守卫] reason=guard_warn_failed' + tag + ' error=' + message);
-            }
+    // 计数与处罚：达到阈值 → 禁言 + muteText；禁言失败 → 降级警告（不重试）
+    const penalty = await applyGuardPenalty({
+        groupId,
+        userId: user,
+        policy,
+        deps: {
+            setBan: (gid, uid, seconds) => ctx.actions.call(
+                'set_group_ban',
+                { group_id: gid, user_id: uid, duration: seconds },
+                ctx.adapterName,
+                ctx.pluginManager.config,
+            ),
+            sendText: (gid, text) => sendGroupText(ctx, gid, text),
+            log: (level, message) => pluginState.logger[level](message),
+        },
+    });
+
+    if (penalty.banned) {
+        hitLog.add({
+            ts: new Date().toISOString(),
+            channel: 'group',
+            groupId,
+            userId: user,
+            result: 'guard_mute',
+            detail: '命中「' + word + '」' + penalty.count + ' 次，禁言 ' + policy.muteSeconds + 's',
+        });
+        return true;
+    }
+
+    // 警告：命中动作要求 warn/both，或禁言失败后的降级
+    const warnText = String(policy.warnText ?? '').trim();
+    if ((action === 'warn' || action === 'both' || penalty.degraded) && warnText) {
+        try {
+            await sendGroupText(ctx, groupId, warnText);
+            pluginState.logger.info('[群守卫] reason=guard_warn' + tag);
+        } catch (e) {
+            const message = e instanceof Error ? e.message : String(e ?? '');
+            pluginState.logger.warn('[群守卫] reason=guard_warn_failed' + tag + ' error=' + message);
         }
     }
 
+    hitLog.add({
+        ts: new Date().toISOString(),
+        channel: 'group',
+        groupId,
+        userId: user,
+        result: penalty.degraded ? 'guard_degraded' : 'guard',
+        detail: '命中「' + word + '」' + penalty.count + '/' + policy.threshold,
+    });
+
     // 命中即短路：即使撤回失败也不继续自动回复
     return true;
+}
+
+/** 发一条群文本；供警告/禁言提示复用 */
+async function sendGroupText(ctx: NapCatPluginContext, groupId: string, text: string): Promise<void> {
+    await ctx.actions.call(
+        'send_msg',
+        {
+            message_type: 'group',
+            group_id: groupId,
+            message: [{ type: 'text', data: { text } }],
+        },
+        ctx.adapterName,
+        ctx.pluginManager.config,
+    );
 }

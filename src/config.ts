@@ -109,6 +109,7 @@ export const DEFAULT_CONFIG: PluginConfig = {
     },
     aiTrigger: { private: true, groupAtOnly: true },
     blocklist: { users: [], syncSeconds: 300, lastSyncedAt: "" },
+    groupConfigRefreshMs: 300000,
 };
 
 /** ID 数组 → 多行文本(每行一个 QQ 号/群号) */
@@ -169,6 +170,7 @@ export function buildConfigSchema(ctx: NapCatPluginContext): PluginConfigSchema 
         ctx.NapCatConfig.text('guard.action', '守卫命中动作', DEFAULT_CONFIG.guard.action, 'recall(仅撤回) / warn(仅警告) / both(撤回并警告)'),
         ctx.NapCatConfig.text('guard.warnText', '守卫警告话术', DEFAULT_CONFIG.guard.warnText, 'action=warn/both 时发到群里的提示语'),
         ctx.NapCatConfig.number('guard.wordsRefreshMs', '守卫词表刷新间隔(毫秒)', DEFAULT_CONFIG.guard.wordsRefreshMs, '从服务 /blocklist 拉取 words 的间隔，默认 300000（5 分钟）；本地词表始终叠加生效'),
+        ctx.NapCatConfig.number('groupConfigRefreshMs', '服务端群配置刷新间隔(毫秒)', DEFAULT_CONFIG.groupConfigRefreshMs ?? 300000, '从服务 /config/groups 拉取群规则与处罚策略的间隔，默认 300000（5 分钟）；拉取失败沿用上次缓存'),
         ctx.NapCatConfig.text('fallback.privateText', '私聊兜底话术', DEFAULT_CONFIG.fallback.privateText, '私聊未命中关键词/FAQ 时必回这句；留空 = 不回'),
         ctx.NapCatConfig.text('fallback.groupAtText', '群内 @ 兜底话术', DEFAULT_CONFIG.fallback.groupAtText, '群内被 @ 但未命中关键词/FAQ 时必回这句；留空 = 不回'),
         ctx.NapCatConfig.boolean('collect.enabled', '转人工追问', false, '关键词动作=转人工时：关闭=直接回兜底；开启=按配置问题逐条追问，5 分钟未答按超时处理'),

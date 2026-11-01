@@ -4,57 +4,99 @@ export interface PluginStatus {
     pluginName: string
     uptime: number
     uptimeFormatted: string
-    config: PluginConfig
+    config: PluginConfigView
     stats: {
         processed: number
         todayProcessed: number
         lastUpdateDay: string
+        faqHit?: number
+        faqMiss?: number
     }
 }
 
-export interface KeywordRule {
-    match: string
-    matchType?: 'contains' | 'prefix'
-    reply: string
+export interface GuardConfigView {
+    enabled: boolean
+    words: string[]
+    wordsText?: string
+    action: 'recall' | 'warn' | 'both'
+    warnText: string
+    groupIds: (number | string)[]
+    groupIdsText?: string
+    wordsRefreshMs?: number
 }
 
-export interface PrivateConfig {
+export interface KbServiceView {
     enabled: boolean
-    defaultReply: string
-    whitelist: (number | string)[]
-    whitelistText?: string
+    baseUrl: string
+    token?: string
+    timeoutMs?: number
 }
 
-export interface GroupConfig {
+/** 页面只读取这些字段；其它配置原样透传，保存时按块合并 */
+export interface PluginConfigView {
     enabled: boolean
-    whitelist: (number | string)[]
-    whitelistText?: string
-}
-
-export interface PluginConfig {
-    enabled: boolean
-    debug: boolean
-    keywords: KeywordRule[]
-    private: PrivateConfig
-    group: GroupConfig
-    blacklist: (number | string)[]
-    keywordsText?: string
-    blacklistText?: string
+    debug?: boolean
     cooldownSeconds: number
     replyDelayMinMs: number
     replyDelayMaxMs: number
     atOnly: boolean
-    groupConfigs?: Record<string, GroupConfig>
+    atReply?: boolean
+    guard: GuardConfigView
+    kbService: KbServiceView
+    groupWelcome?: { enabled: boolean; template: string }
+    group?: { enabled: boolean }
+    private?: { enabled: boolean }
+    [key: string]: unknown
 }
 
-export interface GroupInfo {
-    group_id: number
-    group_name: string
-    member_count: number
-    max_member_count: number
+/** /api/groups 的一条 */
+export interface GroupRuleEntry {
+    groupId: string
+    name: string
     enabled: boolean
-    /** 定时推送时间（如 '08:30'），null 表示未设置（模板默认不使用，按需扩展） */
-    scheduleTime?: string | null
+    atOnly: boolean
+    aiEnabled: boolean
+    welcomeEnabled: boolean
+    welcomeTemplate: string | null
+    source: 'server' | 'local' | 'default'
+}
+
+export interface GuardPolicy {
+    windowSeconds: number
+    threshold: number
+    muteSeconds: number
+    warnText: string
+    muteText: string
+    source?: 'server' | 'default'
+}
+
+export interface Observability {
+    service: {
+        baseUrl: string
+        enabled: boolean
+        tokenConfigured: boolean
+        reachable: boolean
+        lastAttemptAt: string | null
+        lastSyncAt: string | null
+        lastError: string | null
+    }
+    sync: {
+        blocklistAt: string | null
+        guardWordsAt: string | null
+        groupConfigAt: string | null
+        groupConfigVersion: string
+    }
+    faq: { hit: number; miss: number }
+    groups: { managed: number }
+}
+
+export interface HitLogEntry {
+    ts: string
+    channel: 'private' | 'group'
+    groupId?: string
+    userId: string
+    result: string
+    detail?: string
 }
 
 export interface ApiResponse<T = unknown> {

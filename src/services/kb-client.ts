@@ -5,7 +5,7 @@
  * 绝不把异常抛到消息处理链路；token 只放请求头，不写日志。
  */
 
-import type { BlockUser, KbServiceConfig } from '../types';
+import type { BlockUser, GuardPenaltyPolicy, KbServiceConfig, ServerGroupConfig } from '../types';
 
 export interface AskRequest {
     text: string;
@@ -225,6 +225,82 @@ export async function fetchBlocklist(
         users.push(entry);
     }
     return users;
+}
+
+/** GET /config/groups 的解析结果 */
+export interface GroupConfigPayload {
+    groups: ServerGroupConfig[];
+    /** 服务端未下发合法策略时为 null，调用方沿用上次缓存 */
+    guard: GuardPenaltyPolicy | null;
+    version: string;
+}
+
+function parseServerGroup(raw: unknown): ServerGroupConfig | null {
+    if (!isObject(raw)) return null;
+    const groupId = typeof raw.groupId === 'string' ? raw.groupId.trim() : '';
+    if (!groupId) return null;
+    const bool = (v: unknown): boolean | null => (typeof v === 'boolean' ? v : null);
+    const enabled = bool(raw.enabled);
+    const atOnly = bool(raw.atOnly);
+    const aiEnabled = bool(raw.aiEnabled);
+    const welcomeEnabled = bool(raw.welcomeEnabled);
+    if (enabled === null || atOnly === null || aiEnabled === null || welcomeEnabled === null) return null;
+    let welcomeTemplate: string | null = null;
+    if (raw.welcomeTemplate === null || raw.welcomeTemplate === undefined) welcomeTemplate = null;
+    else if (typeof raw.welcomeTemplate === 'string') {
+        const template = raw.welcomeTemplate.trim();
+        welcomeTemplate = template ? template : null;
+    } else return null;
+    return { groupId, enabled, atOnly, aiEnabled, welcomeEnabled, welcomeTemplate };
+}
+
+function intInRange(v: unknown, min: number, max: number): number | null {
+    if (typeof v !== 'number' || !Number.isInteger(v) || v < min || v > max) return null;
+    return v;
+}
+
+/** 校验 /config/groups 的 guard 块；任何一个字段非法即整块丢弃 */
+function parseGuardPolicy(raw: unknown): GuardPenaltyPolicy | null {
+    if (!isObject(raw)) return null;
+    const threshold = intInRange(raw.threshold, 1, 20);
+    const windowSeconds = intInRange(raw.windowSeconds, 60, 86400);
+    const muteSeconds = intInRange(raw.muteSeconds, 60, 2592000);
+    if (threshold === null || windowSeconds === null || muteSeconds === null) return null;
+    if (typeof raw.warnText !== 'string' || typeof raw.muteText !== 'string') return null;
+    return {
+        threshold,
+        windowSeconds,
+        muteSeconds,
+        warnText: raw.warnText,
+        muteText: raw.muteText,
+    };
+}
+
+/**
+ * 拉取服务端群配置 + 守卫处罚策略（GET /config/groups，x-bot-token）。
+ * 请求失败、形状不对一律返回 null，调用方保留上次缓存。
+ */
+export async function fetchGroupConfig(
+    cfg: KbServiceConfig,
+    fetchImpl: FetchLike = fetch,
+): Promise<GroupConfigPayload | null> {
+    const data = await requestJson(
+        cfg,
+        '/config/groups',
+        { method: 'GET', headers: { 'x-bot-token': String(cfg.token || '') } },
+        fetchImpl,
+    );
+    if (!isObject(data) || !Array.isArray(data.groups)) return null;
+    const groups: ServerGroupConfig[] = [];
+    for (const item of data.groups) {
+        const parsed = parseServerGroup(item);
+        if (parsed) groups.push(parsed);
+    }
+    return {
+        groups,
+        guard: parseGuardPolicy(data.guard),
+        version: typeof data.version === 'string' ? data.version : '',
+    };
 }
 
 /**

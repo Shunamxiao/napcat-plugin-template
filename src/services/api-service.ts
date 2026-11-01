@@ -24,8 +24,11 @@ import type {
 import { timingSafeEqual } from 'crypto';
 import { maskConfig, pluginState } from '../core/state';
 import { startGuardWordsSync } from '../core/guard-words';
-import { buildGroupPolicies } from '../core/policy';
+import { startGroupConfigSync, buildEffectiveGroupPolicies, getGroupConfigStatus, getServerGroup, getServerGroupConfigs, getServerGuardPolicy, resolveEffectiveGroupPolicy, resolveGroupWelcome, resolveGuardPolicy, applyServerGroupEntry, applyServerGuardPolicy } from '../core/group-config';
+import { hitLog } from '../core/hit-log';
+import { putServerGroup, putServerGuardPolicy, type GroupPatch } from './admin-client';
 import { resolveImageSource, sendRelayMessage } from '../handlers/message-handler';
+import type { GuardPenaltyPolicy, ServerGroupConfig } from '../types';
 
 /** 令牌比较：长度不同直接失败，等长走常量时间比较 */
 function tokenMatches(provided: string, expected: string): boolean {
@@ -64,7 +67,7 @@ export function registerApiRoutes(ctx: NapCatPluginContext): void {
         const config = pluginState.config;
         res.json({
             code: 0,
-            data: { ...maskConfig(config), groupPolicies: buildGroupPolicies(config) },
+            data: { ...maskConfig(config), groupPolicies: buildEffectiveGroupPolicies(config) },
         });
     });
 
@@ -78,6 +81,7 @@ export function registerApiRoutes(ctx: NapCatPluginContext): void {
             pluginState.updateConfig(body as Partial<import('../types').PluginConfig>);
             // 刷新间隔/服务地址可能刚被改过：重启词表定时器并立即同步一次
             if (body.guard !== undefined || body.kbService !== undefined) startGuardWordsSync();
+            if (body.kbService !== undefined || body.groupConfigRefreshMs !== undefined) startGroupConfigSync();
             ctx.logger.info('配置已保存');
             res.json({ code: 0, message: 'ok' });
         } catch (err) {
@@ -138,78 +142,211 @@ export function registerApiRoutes(ctx: NapCatPluginContext): void {
         }
     });
 
-    // ==================== 群管理（无鉴权）====================
+    // ==================== 群规则 / 守卫策略 / 观测（无鉴权）====================
 
-    /** 获取群列表（附带各群启用状态） */
+    /** 群条目：服务端配置优先，其次本地群规则，最后默认值 */
+    function toGroupEntry(groupId: string, name: string) {
+        const server = getServerGroup(groupId);
+        const policy = resolveEffectiveGroupPolicy(pluginState.config, groupId);
+        const welcome = resolveGroupWelcome(pluginState.config, groupId);
+        return {
+            groupId,
+            name,
+            enabled: policy?.enabled.value ?? false,
+            atOnly: policy?.atOnly.value ?? pluginState.config.atOnly === true,
+            aiEnabled: policy?.aiEnabled.value ?? false,
+            welcomeEnabled: welcome.enabled,
+            // 服务端条目回显它自己的模板（空 = 跟随全局），避免把全局文案误存回服务端
+            welcomeTemplate: server ? server.welcomeTemplate : (welcome.template || null),
+            source: server ? 'server' : (policy ? 'local' : 'default'),
+        };
+    }
+
+    const GROUP_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
+    const GROUP_BOOL_FIELDS = ['enabled', 'atOnly', 'aiEnabled', 'welcomeEnabled'] as const;
+    const GROUP_FIELDS = new Set<string>([...GROUP_BOOL_FIELDS, 'welcomeTemplate']);
+    const GUARD_INT_LIMITS = {
+        threshold: { min: 1, max: 20 },
+        windowSeconds: { min: 60, max: 86400 },
+        muteSeconds: { min: 60, max: 2592000 },
+    } as const;
+    const MAX_GUARD_TEXT = 200;
+    const MAX_WELCOME_TEMPLATE = 500;
+
+    /** 校验 POST /groups/:id 的 body：只收已知字段，类型不对即 400 */
+    function parseGroupPatch(body: unknown): { ok: true; patch: GroupPatch } | { ok: false; error: string } {
+        if (!body || typeof body !== 'object' || Array.isArray(body)) return { ok: false, error: '请求体必须是对象' };
+        const raw = body as Record<string, unknown>;
+        for (const key of Object.keys(raw)) {
+            if (!GROUP_FIELDS.has(key)) return { ok: false, error: '未知字段：' + key };
+        }
+        const patch: GroupPatch = {};
+        for (const key of GROUP_BOOL_FIELDS) {
+            if (!(key in raw)) continue;
+            if (typeof raw[key] !== 'boolean') return { ok: false, error: key + ' 必须是布尔值' };
+            patch[key] = raw[key] as boolean;
+        }
+        if ('welcomeTemplate' in raw) {
+            const value = raw.welcomeTemplate;
+            if (value === null) {
+                patch.welcomeTemplate = null;
+            } else if (typeof value === 'string') {
+                const template = value.trim();
+                if ([...template].length > MAX_WELCOME_TEMPLATE) {
+                    return { ok: false, error: '欢迎模板最多 ' + MAX_WELCOME_TEMPLATE + ' 字' };
+                }
+                patch.welcomeTemplate = template || null;
+            } else {
+                return { ok: false, error: 'welcomeTemplate 必须是字符串或 null' };
+            }
+        }
+        if (Object.keys(patch).length === 0) return { ok: false, error: '至少提交一个字段' };
+        return { ok: true, patch };
+    }
+
+    /** 校验 POST /guard-policy 的 body：与服务端同一套范围 */
+    function parseGuardPolicy(body: unknown): { ok: true; policy: GuardPenaltyPolicy } | { ok: false; error: string } {
+        if (!body || typeof body !== 'object' || Array.isArray(body)) return { ok: false, error: '请求体必须是对象' };
+        const raw = body as Record<string, unknown>;
+        const allowed = new Set(['windowSeconds', 'threshold', 'muteSeconds', 'warnText', 'muteText', 'source']);
+        for (const key of Object.keys(raw)) {
+            if (!allowed.has(key)) return { ok: false, error: '未知字段：' + key };
+        }
+        const policy = {} as GuardPenaltyPolicy;
+        for (const key of ['threshold', 'windowSeconds', 'muteSeconds'] as const) {
+            const { min, max } = GUARD_INT_LIMITS[key];
+            const value = raw[key];
+            if (typeof value !== 'number' || !Number.isInteger(value)) return { ok: false, error: key + ' 必须是整数' };
+            if (value < min || value > max) return { ok: false, error: key + ' 必须在 ' + min + '..' + max + ' 之间' };
+            policy[key] = value;
+        }
+        for (const key of ['warnText', 'muteText'] as const) {
+            const value = raw[key];
+            if (typeof value !== 'string') return { ok: false, error: key + ' 必须是字符串' };
+            if ([...value].length > MAX_GUARD_TEXT) return { ok: false, error: key + ' 最多 ' + MAX_GUARD_TEXT + ' 字' };
+            policy[key] = value;
+        }
+        return { ok: true, policy };
+    }
+
+    /** 群列表：OneBot 群名 + 服务端条目 + 本地规则，合并成管理页数据 */
     router.getNoAuth('/groups', async (_req, res) => {
+        const groups = new Map<string, string>();
         try {
-            const groups = await ctx.actions.call(
+            const list = await ctx.actions.call(
                 'get_group_list',
                 {},
                 ctx.adapterName,
-                ctx.pluginManager.config
-            ) as Array<{ group_id: number; group_name: string; member_count: number; max_member_count: number }>;
-
-            const groupsWithConfig = (groups || []).map((group) => {
-                const groupId = String(group.group_id);
-                return {
-                    group_id: group.group_id,
-                    group_name: group.group_name,
-                    member_count: group.member_count,
-                    max_member_count: group.max_member_count,
-                    enabled: pluginState.isGroupEnabled(groupId),
-                };
-            });
-
-            res.json({ code: 0, data: groupsWithConfig });
+                ctx.pluginManager.config,
+            ) as Array<{ group_id: number | string; group_name?: string }>;
+            for (const group of list ?? []) {
+                groups.set(String(group.group_id), String(group.group_name ?? ''));
+            }
         } catch (e) {
-            ctx.logger.error('获取群列表失败:', e);
-            res.status(500).json({ code: -1, message: String(e) });
+            // OneBot 未就绪时仍返回服务端/本地条目，页面不至于整页失败
+            ctx.logger.warn('获取群列表失败（仅返回已配置群）:', e);
         }
+        for (const entry of getServerGroupConfigs()) {
+            if (!groups.has(entry.groupId)) groups.set(entry.groupId, '');
+        }
+        for (const groupId of Object.keys(pluginState.config.groupRules ?? {})) {
+            if (!groups.has(groupId)) groups.set(groupId, '');
+        }
+        const entries = Array.from(groups.entries()).map(([groupId, name]) => toGroupEntry(groupId, name));
+        res.json({ code: 0, data: { groups: entries } });
     });
 
-    /** 更新单个群配置 */
-    router.postNoAuth('/groups/:id/config', async (req, res) => {
-        try {
-            const groupId = req.params?.id;
-            if (!groupId) {
-                return res.status(400).json({ code: -1, message: '缺少群 ID' });
-            }
-
-            const body = req.body as Record<string, unknown> | undefined;
-            const enabled = body?.enabled;
-            pluginState.updateGroupConfig(groupId, { enabled: Boolean(enabled) });
-            ctx.logger.info(`群 ${groupId} 配置已更新: enabled=${enabled}`);
-            res.json({ code: 0, message: 'ok' });
-        } catch (err) {
-            ctx.logger.error('更新群配置失败:', err);
-            res.status(500).json({ code: -1, message: String(err) });
+    /** 写单个群的服务端配置：PUT /admin/groups/:groupId（Basic 凭据来自环境） */
+    router.postNoAuth('/groups/:id', async (req, res) => {
+        const groupId = String(req.params?.id ?? '').trim();
+        if (!GROUP_ID_RE.test(groupId)) {
+            return res.status(400).json({ code: -1, message: '群号不合法' });
         }
+        const parsed = parseGroupPatch(req.body);
+        if (!parsed.ok) {
+            return res.status(400).json({ code: -1, message: parsed.error });
+        }
+        const baseUrl = pluginState.config.kbService.baseUrl;
+        const result = await putServerGroup(baseUrl, groupId, parsed.patch);
+        if (!result.ok) {
+            ctx.logger.warn('[群配置] 写入失败 group=' + groupId + ' status=' + result.status + ' error=' + result.error);
+            const status = result.status >= 400 && result.status <= 599 ? result.status : 502;
+            return res.status(status).json({ code: -1, message: result.error });
+        }
+        const entry = result.data as ServerGroupConfig;
+        if (!entry || !entry.groupId) {
+            return res.status(502).json({ code: -1, message: '服务端返回的群条目不可用' });
+        }
+        applyServerGroupEntry(entry);
+        ctx.logger.info('[群配置] 已写入 group=' + groupId);
+        res.json({ code: 0, data: toGroupEntry(entry.groupId, '') });
     });
 
-    /** 批量更新群配置 */
-    router.postNoAuth('/groups/bulk-config', async (req, res) => {
-        try {
-            const body = req.body as Record<string, unknown> | undefined;
-            const { enabled, groupIds } = body || {};
-
-            if (typeof enabled !== 'boolean' || !Array.isArray(groupIds)) {
-                return res.status(400).json({ code: -1, message: '参数错误' });
-            }
-
-            for (const groupId of groupIds) {
-                pluginState.updateGroupConfig(String(groupId), { enabled });
-            }
-
-            ctx.logger.info(`批量更新群配置完成 | 数量: ${groupIds.length}, enabled=${enabled}`);
-            res.json({ code: 0, message: 'ok' });
-        } catch (err) {
-            ctx.logger.error('批量更新群配置失败:', err);
-            res.status(500).json({ code: -1, message: String(err) });
-        }
+    /** 守卫处罚策略：读缓存（服务端优先，未同步时本地兜底） */
+    router.getNoAuth('/guard-policy', (_req, res) => {
+        const serverPolicy = getServerGuardPolicy();
+        const policy = serverPolicy ?? resolveGuardPolicy(pluginState.config.guard);
+        res.json({ code: 0, data: { ...policy, source: serverPolicy ? 'server' : 'default' } });
     });
 
-    // TODO: 在这里添加你的自定义 API 路由
+    /** 守卫处罚策略：写服务端 PUT /admin/guard-policy */
+    router.postNoAuth('/guard-policy', async (req, res) => {
+        const parsed = parseGuardPolicy(req.body);
+        if (!parsed.ok) {
+            return res.status(400).json({ code: -1, message: parsed.error });
+        }
+        const baseUrl = pluginState.config.kbService.baseUrl;
+        const result = await putServerGuardPolicy(baseUrl, parsed.policy);
+        if (!result.ok) {
+            ctx.logger.warn('[守卫策略] 写入失败 status=' + result.status + ' error=' + result.error);
+            const status = result.status >= 400 && result.status <= 599 ? result.status : 502;
+            return res.status(status).json({ code: -1, message: result.error });
+        }
+        const saved = result.data && typeof result.data === 'object' ? result.data : parsed.policy;
+        applyServerGuardPolicy(saved);
+        ctx.logger.info('[守卫策略] 已写入服务端');
+        res.json({ code: 0, data: { ...saved, source: 'server' } });
+    });
+
+    /** 命中日志：最近 N 条（默认 50，上限 200） */
+    router.getNoAuth('/logs', (req, res) => {
+        const rawLimit = Array.isArray(req.query?.limit) ? req.query.limit[0] : req.query?.limit;
+        const limit = Math.max(1, Math.min(200, Number(rawLimit) || 50));
+        res.json({ code: 0, data: { entries: hitLog.list(limit), total: hitLog.size() } });
+    });
+
+    /** 服务与观测：连通性、最近同步时间、FAQ 计数 */
+    router.getNoAuth('/observability', (_req, res) => {
+        const cfg = pluginState.config.kbService;
+        const status = getGroupConfigStatus();
+        res.json({
+            code: 0,
+            data: {
+                service: {
+                    baseUrl: cfg?.baseUrl ?? '',
+                    enabled: cfg?.enabled === true,
+                    tokenConfigured: !!cfg?.token,
+                    reachable: status.lastError === null && status.lastSyncAt !== null,
+                    lastAttemptAt: status.lastAttemptAt,
+                    lastSyncAt: status.lastSyncAt,
+                    lastError: status.lastError,
+                },
+                sync: {
+                    blocklistAt: pluginState.config.blocklist?.lastSyncedAt || null,
+                    guardWordsAt: pluginState.guardWordsSyncedAt || null,
+                    groupConfigAt: status.lastSyncAt,
+                    groupConfigVersion: status.version,
+                },
+                faq: {
+                    hit: pluginState.stats.faqHit ?? 0,
+                    miss: pluginState.stats.faqMiss ?? 0,
+                },
+                groups: {
+                    managed: status.groupCount,
+                },
+            },
+        });
+    });
 
     ctx.logger.debug('API 路由注册完成');
 }

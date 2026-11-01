@@ -16,7 +16,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { handleMessage, pluginState, sanitizeConfig } from "../dist/index.mjs";
+import { handleMessage, pluginState, sanitizeConfig, clearGuardPenalty } from "../dist/index.mjs";
 
 const SELF = "1457278554";
 const OTHER = "2622011721";
@@ -109,6 +109,8 @@ const event = (kind, text, groupId = GID, id = nextMessageId()) => ({
 });
 const wait = () => new Promise((resolve) => setTimeout(resolve, 30));
 const reset = (patch) => {
+  // 处罚计数是进程级状态：每个用例独立，避免上一用例的命中数影响禁言阈值
+  clearGuardPenalty();
   pluginState.config = sanitizeConfig({
     ...JSON.parse(fs.readFileSync(configPath, "utf-8")),
     ...patch,

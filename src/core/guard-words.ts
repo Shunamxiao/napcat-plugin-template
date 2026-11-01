@@ -66,6 +66,7 @@ export async function syncGuardWords(): Promise<void> {
             return;
         }
         pluginState.serviceGuardWords = words;
+        pluginState.guardWordsSyncedAt = new Date().toISOString();
         log('info', '[守卫] 词表同步完成，服务词 ' + words.length + ' 条（本地 ' + (pluginState.config.guard.words?.length ?? 0) + ' 条）');
     } catch (err) {
         log('warn', '[守卫] 词表同步异常：' + (err instanceof Error ? err.message : String(err)));

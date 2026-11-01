@@ -6,24 +6,19 @@ import type { NapCatPluginContext } from 'napcat-types/napcat-onebot/network/plu
 import { EventType } from 'napcat-types/napcat-onebot/event/index';
 import { pluginState } from '../core/state';
 import { rememberSentMessage } from '../core/sent-messages';
-import type { GroupWelcomeConfig, GroupWelcomeOverride } from '../types';
+import { resolveGroupWelcome } from '../core/group-config';
+import { renderWelcomeTemplate, resolveWelcome } from '../core/welcome';
+
+// 保持既有导出面（test/welcome.mjs 从入口导出 resolveWelcome）
+export { resolveWelcome, renderWelcomeTemplate };
 
 /** OneBot 事件按需读取的宽松结构；不同版本可能存在字段差异 */
 type EventLike = Record<string, unknown>;
 
 /**
- * 解析某群的入群欢迎配置：群级有值优先，null/缺省回落到全局。
- * 纯函数，便于单测；空模板同样视为跟随全局。
+ * 解析某群的入群欢迎配置：服务端条目优先，其次群级覆盖，最后全局。
+ * 保留导出名 resolveWelcome 供既有调用方/测试使用（实现在 core/welcome）。
  */
-export function resolveWelcome(
-    override: GroupWelcomeOverride | undefined,
-    global: GroupWelcomeConfig | undefined,
-): { enabled: boolean; template: string } {
-    const enabled = override?.enabled != null ? override.enabled : !!global?.enabled;
-    const ownTemplate = typeof override?.template === 'string' && override.template.trim() ? override.template : '';
-    const template = String(ownTemplate || global?.template || '').trim();
-    return { enabled: !!enabled, template };
-}
 
 /**
  * 处理非消息事件。
@@ -51,14 +46,20 @@ async function handleGroupIncrease(ctx: NapCatPluginContext, ev: EventLike): Pro
     // 机器人自己入群时不发欢迎
     if (selfId && userId === selfId) return;
 
-    // 群级 welcome 覆盖全局；null/缺省 = 跟随全局
-    const groupRule = pluginState.config.groupRules?.[groupId];
-    const conf = resolveWelcome(groupRule?.welcome, pluginState.config.groupWelcome);
+    // 服务端条目优先（welcomeEnabled/welcomeTemplate），否则群级覆盖 → 全局
+    const conf = resolveGroupWelcome(pluginState.config, groupId);
     if (!conf.enabled) return;
     const template = conf.template;
     if (!template) return;
 
-    const text = renderWelcomeTemplate(template, groupId, userId);
+    // 只取模板真正用到的占位符，少打两次 OneBot 调用
+    const needNickname = template.includes('{nickname}');
+    const needGroupName = template.includes('{group_name}');
+    const [nickname, groupName] = await Promise.all([
+        needNickname ? fetchNickname(ctx, groupId, userId) : Promise.resolve(''),
+        needGroupName ? fetchGroupName(ctx, groupId) : Promise.resolve(''),
+    ]);
+    const text = renderWelcomeTemplate(template, groupId, userId, nickname, groupName);
     try {
         const result = await ctx.actions.call(
             'send_msg',
@@ -101,9 +102,36 @@ async function handleFriendRequest(ctx: NapCatPluginContext, ev: EventLike): Pro
     }
 }
 
-/** 渲染欢迎模板；用函数替换避免 id 中的特殊字符被当作替换语法 */
-export function renderWelcomeTemplate(template: string, groupId: string, userId: string): string {
-    return template
-        .replace(/\{group_id\}/g, () => groupId)
-        .replace(/\{user_id\}/g, () => userId);
+/** 取群成员昵称（优先群名片）；失败返回空串，不影响欢迎语发送 */
+async function fetchNickname(ctx: NapCatPluginContext, groupId: string, userId: string): Promise<string> {
+    try {
+        const info = await ctx.actions.call(
+            'get_group_member_info',
+            { group_id: groupId, user_id: userId, no_cache: false },
+            ctx.adapterName,
+            ctx.pluginManager.config,
+        ) as { card?: unknown; nickname?: unknown } | null;
+        const card = typeof info?.card === 'string' ? info.card.trim() : '';
+        if (card) return card;
+        return typeof info?.nickname === 'string' ? info.nickname.trim() : '';
+    } catch (e) {
+        pluginState.logger.debug('[入群欢迎] 取昵称失败:', e);
+        return '';
+    }
+}
+
+/** 取群名；失败返回空串，不影响欢迎语发送 */
+async function fetchGroupName(ctx: NapCatPluginContext, groupId: string): Promise<string> {
+    try {
+        const info = await ctx.actions.call(
+            'get_group_info',
+            { group_id: groupId, no_cache: false },
+            ctx.adapterName,
+            ctx.pluginManager.config,
+        ) as { group_name?: unknown } | null;
+        return typeof info?.group_name === 'string' ? info.group_name.trim() : '';
+    } catch (e) {
+        pluginState.logger.debug('[入群欢迎] 取群名失败:', e);
+        return '';
+    }
 }

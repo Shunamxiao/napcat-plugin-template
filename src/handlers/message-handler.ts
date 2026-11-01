@@ -7,7 +7,9 @@ import type { NapCatPluginContext } from 'napcat-types/napcat-onebot/network/plu
 import { pluginState } from '../core/state';
 import { isBlocked } from '../core/blocklist';
 import { pickReply, planReply, resolveSend, type Plan } from '../core/escalation';
-import { isGroupConfigured, resolveGroupFallback, resolveGroupPolicy } from '../core/policy';
+import { resolveGroupFallback } from '../core/policy';
+import { resolveEffectiveGroupPolicy } from '../core/group-config';
+import { hitLog } from '../core/hit-log';
 import { appendHandoffRecord } from '../core/handoff';
 import { classifySendError, sendWithRetry } from '../core/send-retry';
 import { SendGuard } from '../core/send-guard';
@@ -125,12 +127,21 @@ export async function handleMessage(ctx: NapCatPluginContext, event: OB11Message
             const line = '[群聊] 跳过 group=' + groupId + ' reason=' + reason + (detail ? ' ' + detail : '');
             if (atBot) pluginState.logger.info(line);
             else pluginState.logger.debug(line);
+            hitLog.add({
+                ts: new Date().toISOString(),
+                channel: 'group',
+                groupId,
+                userId: senderId,
+                result: 'silent',
+                detail: reason + (detail ? ' ' + detail : ''),
+            });
         };
         if (!config.group.enabled) { skip('群聊总开关关闭'); return; }
         if (!checkWhitelist(config.group.whitelist, groupId)) { skip('群白名单外'); return; }
+        // 生效口径：服务端有条目以服务端为准，否则回落本地 groupRules；都没有则不处理
+        const policy = resolveEffectiveGroupPolicy(config, groupId);
+        if (!policy) { skip('未配置群'); return; }
         const groupRule = config.groupRules?.[groupId];
-        if (!isGroupConfigured(config, groupId) || !groupRule) { skip('未配置群'); return; }
-        const policy = resolveGroupPolicy(config, groupId);
         if (!policy.enabled.value) { skip('群已禁用'); return; }
         // 追问中的用户消息优先作为答案消费；不要求 @，否则群内无法回答
         if (await consumeCollectAnswer(ctx, event, collectKey('group', senderId, groupId), senderId, groupId, text, 'group')) return;
@@ -181,6 +192,14 @@ export async function handleMessage(ctx: NapCatPluginContext, event: OB11Message
                 ' 兜底=' + (fallback.groupAtText ? '有' : '空'));
             return;
         }
+        hitLog.add({
+            ts: new Date().toISOString(),
+            channel: 'group',
+            groupId,
+            userId: senderId,
+            result: 'answered',
+            detail: (out.text || (out.image ? '[图片]' : '')).slice(0, 80) + ' source=' + out.source,
+        });
         scheduleReply(ctx, event, { text: out.text || '', image: out.image }, '[群聊] ' + groupId + sourceTag(out.source));
     }
 }
@@ -283,7 +302,23 @@ async function processPrivateMessage(ctx: NapCatPluginContext, event: OB11Messag
         kind: 'private',
         defaultReply: config.fallback?.privateText ?? '',
     });
-    if (!out.send || (!out.text && !out.image)) return;
+    if (!out.send || (!out.text && !out.image)) {
+        hitLog.add({
+            ts: new Date().toISOString(),
+            channel: 'private',
+            userId: senderId,
+            result: 'silent',
+            detail: '无可发送内容 kind=' + plan.kind,
+        });
+        return;
+    }
+    hitLog.add({
+        ts: new Date().toISOString(),
+        channel: 'private',
+        userId: senderId,
+        result: 'answered',
+        detail: (out.text || (out.image ? '[图片]' : '')).slice(0, 80) + ' source=' + out.source,
+    });
     scheduleReply(ctx, event, { text: out.text || '', image: out.image }, '[私聊] ' + senderId + sourceTag(out.source));
 }
 
@@ -370,10 +405,8 @@ function finalizeCollect(
     const answerEvent = session.event as OB11Message | undefined;
     clearCollect(pluginState.collectSessions, session);
     // 群里被移出白名单/关闭后不再补发，避免配置变更后继续发消息
-    const groupActive = kind !== 'group' || (
-        isGroupConfigured(pluginState.config, session.groupId ?? '') &&
-        resolveGroupPolicy(pluginState.config, session.groupId ?? '').enabled.value
-    );
+    const groupActive = kind !== 'group' ||
+        (resolveEffectiveGroupPolicy(pluginState.config, session.groupId ?? '')?.enabled.value ?? false);
     const fallback = kind === 'private'
         ? pluginState.config.fallback?.privateText ?? ''
         : resolveGroupFallback(pluginState.config, session.groupId ?? '').groupAtText;
@@ -504,6 +537,7 @@ async function askKnowledge(
     const outcome = await askServiceOutcome(cfg, { text: cleaned, userId, groupId, trigger });
     const tag = trigger + ' user=' + userId + ' group=' + (groupId || '-');
     if (outcome.failure) {
+        pluginState.stats.faqMiss += 1;
         // 4xx 通常是配置/令牌问题，不属于「服务卡了」，不进用户降级链路
         if (outcome.failure.kind === 'http' && (outcome.failure.status ?? 0) < 500) {
             pluginState.logger.debug('[知识库] 调用失败 status=http code=' + (outcome.failure.status ?? '-') + ' ' + tag);
@@ -517,7 +551,10 @@ async function askKnowledge(
         return { reply: null };
     }
     pluginState.logger.info('[知识库] ' + tag + ' action=' + res.action + ' score=' + (res.score ?? '-'));
-    return { reply: res.reply.trim() || null };
+    const reply = res.reply.trim();
+    if (reply) pluginState.stats.faqHit += 1;
+    else pluginState.stats.faqMiss += 1;
+    return { reply: reply || null };
 }
 
 /** 同一用户 10 分钟内只允许一条降级提示；返回 true 表示本次可发 */
@@ -550,6 +587,14 @@ function respondServiceDown(
         pluginState.logger.debug('[服务降级] 10 分钟内已提示过，本次静默 user=' + senderId);
         return;
     }
+    hitLog.add({
+        ts: new Date().toISOString(),
+        channel: groupId ? 'group' : 'private',
+        groupId,
+        userId: senderId,
+        result: 'service_down',
+        detail: failure.kind + (failure.status !== undefined ? ' ' + failure.status : ''),
+    });
     scheduleReply(ctx, event, { text: SERVICE_DOWN_REPLY }, '[服务降级] ' + (groupId ? '群 ' + groupId + ' ' : '私聊 ') + senderId);
 }
 

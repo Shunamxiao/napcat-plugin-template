@@ -166,6 +166,35 @@ export interface LoopGuardConfig {
     pauseSeconds: number;
 }
 
+/** 服务端群配置（GET /config/groups 的一条；服务端是群规则真源） */
+export interface ServerGroupConfig {
+    groupId: string;
+    /** 该群是否启用自动回复 */
+    enabled: boolean;
+    /** 是否仅 @ 时回复 */
+    atOnly: boolean;
+    /** 是否允许升级 AI */
+    aiEnabled: boolean;
+    /** 是否启用入群欢迎 */
+    welcomeEnabled: boolean;
+    /** 入群欢迎模板；空/null 时回落到 groupWelcome.template */
+    welcomeTemplate: string | null;
+}
+
+/** 服务端守卫处罚策略（屏蔽词命中 N 次 → 禁言） */
+export interface GuardPenaltyPolicy {
+    /** 计数窗口(秒) */
+    windowSeconds: number;
+    /** 触发禁言的次数 */
+    threshold: number;
+    /** 禁言时长(秒) */
+    muteSeconds: number;
+    /** 警告文案 */
+    warnText: string;
+    /** 禁言提示文案 */
+    muteText: string;
+}
+
 /** 群内容守卫命中后的动作：撤回 | 警告 | 撤回并警告 */
 export type GuardAction = "recall" | "warn" | "both";
 
@@ -245,6 +274,8 @@ export interface PluginConfig {
     aiTrigger: AiTriggerConfig;
     /** 服务侧拉黑名单缓存 */
     blocklist: BlocklistCacheConfig;
+    /** 服务端群配置刷新间隔(毫秒)；默认 300000，服务不可用时沿用上次缓存 */
+    groupConfigRefreshMs?: number;
 }
 
 export interface ApiResponse<T = unknown> {
