@@ -5,6 +5,7 @@
 import type { NapCatPluginContext } from 'napcat-types/napcat-onebot/network/plugin/types';
 import { EventType } from 'napcat-types/napcat-onebot/event/index';
 import { pluginState } from '../core/state';
+import { rememberSentMessage } from '../core/sent-messages';
 import type { GroupWelcomeConfig, GroupWelcomeOverride } from '../types';
 
 /** OneBot 事件按需读取的宽松结构；不同版本可能存在字段差异 */
@@ -59,7 +60,7 @@ async function handleGroupIncrease(ctx: NapCatPluginContext, ev: EventLike): Pro
 
     const text = renderWelcomeTemplate(template, groupId, userId);
     try {
-        await ctx.actions.call(
+        const result = await ctx.actions.call(
             'send_msg',
             {
                 message_type: 'group',
@@ -69,6 +70,7 @@ async function handleGroupIncrease(ctx: NapCatPluginContext, ev: EventLike): Pro
             ctx.adapterName,
             ctx.pluginManager.config,
         );
+        rememberSentMessage(result);
         pluginState.logger.info('[入群欢迎] 群 ' + groupId + ' 新成员 ' + userId);
     } catch (e) {
         pluginState.logger.error('[入群欢迎] 群 ' + groupId + ' 发送失败:', e);

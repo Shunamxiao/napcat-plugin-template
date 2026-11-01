@@ -31,7 +31,7 @@ const baseConfig = {
   replyDelayMinMs: 0,
   replyDelayMaxMs: 0,
   crossAccountDedup: false,
-  private: { enabled: true, whitelist: [] },
+  private: { enabled: true, whitelist: [], mergeWindowMs: 0 },
   group: { enabled: true, whitelist: [] },
   fallback: { privateText: "私聊兜底", groupAtText: "群兜底" },
   collect: { enabled: false, questions: [] },

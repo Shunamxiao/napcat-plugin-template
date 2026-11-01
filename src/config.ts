@@ -82,6 +82,13 @@ export const DEFAULT_CONFIG: PluginConfig = {
     sendGuard: { failThreshold: 3, privateFailThreshold: 5, cooldownSeconds: 600 },
     ignoreSenders: [],
     loopGuard: { maxReplies: 5, windowSeconds: 60, pauseSeconds: 300 },
+    guard: {
+        enabled: false,
+        groupIds: [],
+        words: [],
+        action: "recall",
+        warnText: "请文明发言，违规内容将被撤回。",
+    },
     groupConfigs: {},
     groupRules: {},
     keywords: [
@@ -89,7 +96,7 @@ export const DEFAULT_CONFIG: PluginConfig = {
         { match: "下载", reply: "群里没有找到吗，先直接去https://apks.cc搜索下载下，这个是群里小伙伴给我的，下载后使用uu安装更新都行" },
         { match: "没找到", reply: "群里没有找到吗，先直接去https://apks.cc搜索下载下，这个是群里小伙伴给我的，下载后使用uu安装更新都行" },
     ],
-    private: { enabled: false, defaultReply: "【自动回复】我现在不在，稍后回复你。", whitelist: [] },
+    private: { enabled: false, defaultReply: "【自动回复】我现在不在，稍后回复你。", whitelist: [], mergeWindowMs: 3000 },
     group: { enabled: true, whitelist: [] },
     blacklist: [],
     crossAccountDedup: true,
@@ -117,12 +124,22 @@ export function textToIdList(text: string | undefined): (number | string)[] {
         .filter(Boolean);
 }
 
+/** 多行文本 → 词条数组(每行一个,不把 # 当注释,保留词里的 # 号) */
+export function textToLines(text: string | undefined): string[] {
+    if (!text) return [];
+    return text
+        .split('\n')
+        .map((l) => l.trim())
+        .filter(Boolean);
+}
+
 export function buildConfigSchema(ctx: NapCatPluginContext): PluginConfigSchema {
     return ctx.NapCatConfig.combine(
         ctx.NapCatConfig.html('<div style="padding:16px;background:linear-gradient(135deg,#667eea,#764ba2);border-radius:12px;margin-bottom:20px;color:white;"><h3 style="margin:0 0 6px 0;font-size:18px;font-weight:600;">QQ 自动回复</h3><p style="margin:0;font-size:13px;opacity:0.85;">关键词触发 · 私聊/群聊 · 规则热重载</p></div>'),
         ctx.NapCatConfig.boolean('enabled', '启用自动回复', true, '总开关'),
         ctx.NapCatConfig.html('<div style="margin:12px 0 4px;font-weight:600;font-size:14px;">私聊设置</div>'),
         ctx.NapCatConfig.boolean('private.enabled', '私聊自动回复', false, '开启后私聊消息触发自动回复'),
+        ctx.NapCatConfig.number('private.mergeWindowMs', '私聊连发合并窗口(毫秒)', 3000, '同一私聊用户在窗口内连发的消息合并成一次问答（换行拼接，最多 5 条）；0 = 关闭'),
         ctx.NapCatConfig.html('<div style="margin:12px 0 4px;font-weight:600;font-size:14px;">关键词规则</div>'),
         ctx.NapCatConfig.text('keywordsText', '关键词规则列表', keywordsToText(DEFAULT_CONFIG.keywords), '每行一条:匹配词|类型|回复|图片URL或路径(第4段可选)|ai(第5段可选)|动作(第6段可选:reply/ai/human)。类型 prefix/contains/regex。多回复池请在扩展配置页用 ||| 分隔编辑。图片只支持 jpg/png/webp/gif，建议 CDN 直链，小图可用 base64://'),
         ctx.NapCatConfig.html('<div style="margin:12px 0 4px;font-weight:600;font-size:14px;">群聊设置</div>'),
@@ -145,6 +162,11 @@ export function buildConfigSchema(ctx: NapCatPluginContext): PluginConfigSchema 
         ctx.NapCatConfig.number('loopGuard.maxReplies', '对刷熔断阈值(条)', 5, '同一群在统计窗口内发出回复达到该条数即暂停该群（默认 5）'),
         ctx.NapCatConfig.number('loopGuard.windowSeconds', '对刷统计窗口(秒)', 60, '对刷熔断的统计窗口（默认 60）'),
         ctx.NapCatConfig.number('loopGuard.pauseSeconds', '对刷暂停时长(秒)', 300, '达到阈值后该群暂停发送的时长（默认 300）'),
+        ctx.NapCatConfig.boolean('guard.enabled', '群内容守卫', false, '群消息命中屏蔽词时自动撤回；只处理群消息，不踢人、不禁言'),
+        ctx.NapCatConfig.text('guard.groupIdsText', '守卫生效群号', idListToText(DEFAULT_CONFIG.guard.groupIds), '每行一个群号；留空 = 所有已启用自动回复的群'),
+        ctx.NapCatConfig.text('guard.wordsText', '守卫屏蔽词', idListToText(DEFAULT_CONFIG.guard.words), '每行一个词，大小写不敏感；留空 = 不撤回任何消息'),
+        ctx.NapCatConfig.text('guard.action', '守卫命中动作', DEFAULT_CONFIG.guard.action, 'recall(仅撤回) / warn(仅警告) / both(撤回并警告)'),
+        ctx.NapCatConfig.text('guard.warnText', '守卫警告话术', DEFAULT_CONFIG.guard.warnText, 'action=warn/both 时发到群里的提示语'),
         ctx.NapCatConfig.text('fallback.privateText', '私聊兜底话术', DEFAULT_CONFIG.fallback.privateText, '私聊未命中关键词/FAQ 时必回这句；留空 = 不回'),
         ctx.NapCatConfig.text('fallback.groupAtText', '群内 @ 兜底话术', DEFAULT_CONFIG.fallback.groupAtText, '群内被 @ 但未命中关键词/FAQ 时必回这句；留空 = 不回'),
         ctx.NapCatConfig.boolean('collect.enabled', '转人工追问', false, '关键词动作=转人工时：关闭=直接回兜底；开启=按配置问题逐条追问，5 分钟未答按超时处理'),

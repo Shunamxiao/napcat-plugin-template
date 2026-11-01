@@ -62,6 +62,21 @@ function clampInt(v: unknown, min: number, max: number, fallback: number): numbe
     return Math.min(max, Math.max(min, Math.round(n)));
 }
 
+/** 去重字符串列表：只收 string/number，trim 后保留非空项 */
+function uniqueStrings(raw: unknown, maxLen = 200): string[] {
+    if (!Array.isArray(raw)) return [];
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const item of raw) {
+        if (typeof item !== 'string' && typeof item !== 'number') continue;
+        const value = String(item).trim().slice(0, maxLen);
+        if (!value || seen.has(value)) continue;
+        seen.add(value);
+        out.push(value);
+    }
+    return out;
+}
+
 /** 清洗服务侧拉黑缓存：逐条校验 userId、去重；reason/ts 可选 */
 export function sanitizeBlockUsers(raw: unknown): BlockUser[] {
     if (!Array.isArray(raw)) return [];
@@ -228,6 +243,18 @@ export function sanitizeConfig(raw: unknown): PluginConfig {
             pauseSeconds: clampInt(raw.loopGuard.pauseSeconds, 1, 86400, out.loopGuard.pauseSeconds),
         };
     }
+    // 群内容守卫：开关/群号/词表/动作/警告话术逐项白名单化
+    if (isObject(raw.guard)) {
+        out.guard = {
+            enabled: typeof raw.guard.enabled === 'boolean' ? raw.guard.enabled : out.guard.enabled,
+            groupIds: Array.isArray(raw.guard.groupIds) ? uniqueStrings(raw.guard.groupIds, 32) : out.guard.groupIds,
+            action: raw.guard.action === 'warn' || raw.guard.action === 'both' ? raw.guard.action : 'recall',
+            words: Array.isArray(raw.guard.words) ? uniqueStrings(raw.guard.words) : out.guard.words,
+            warnText: typeof raw.guard.warnText === 'string' ? raw.guard.warnText : out.guard.warnText,
+        };
+        if (typeof raw.guard.groupIdsText === 'string') out.guard.groupIdsText = raw.guard.groupIdsText;
+        if (typeof raw.guard.wordsText === 'string') out.guard.wordsText = raw.guard.wordsText;
+    }
     if (typeof raw.crossAccountDedup === 'boolean') out.crossAccountDedup = raw.crossAccountDedup;
     if (typeof raw.keywordsText === 'string') out.keywordsText = raw.keywordsText;
     if (typeof raw.blacklistText === 'string') out.blacklistText = raw.blacklistText;
@@ -252,6 +279,8 @@ export function sanitizeConfig(raw: unknown): PluginConfig {
         if (typeof raw.private.defaultReply === 'string') out.private.defaultReply = raw.private.defaultReply;
         if (Array.isArray(raw.private.whitelist)) out.private.whitelist = raw.private.whitelist.map(String);
         if (typeof raw.private.whitelistText === 'string') out.private.whitelistText = raw.private.whitelistText;
+        // 0 表示关闭合并；上限 60 秒，防止误配成超大值导致回复迟迟不发
+        out.private.mergeWindowMs = clampInt(raw.private.mergeWindowMs, 0, 60000, out.private.mergeWindowMs);
     }
 
     if (isObject(raw.group)) {
@@ -522,6 +551,7 @@ class PluginState {
         if (partial.collect) merged.collect = { ...this.config.collect, ...partial.collect };
         if (partial.relay) merged.relay = { ...this.config.relay, ...partial.relay };
         if (partial.sendGuard) merged.sendGuard = { ...this.config.sendGuard, ...partial.sendGuard };
+        if (partial.guard) merged.guard = { ...this.config.guard, ...partial.guard };
         // 群级规则文本:合法 JSON 才覆盖结构化规则,非法文本忽略
         if (typeof partial.groupRulesText === 'string') {
             const parsed = textToGroupRules(partial.groupRulesText);

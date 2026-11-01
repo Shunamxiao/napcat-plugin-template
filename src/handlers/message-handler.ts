@@ -12,6 +12,8 @@ import { appendHandoffRecord } from '../core/handoff';
 import { classifySendError, sendWithRetry } from '../core/send-retry';
 import { SendGuard } from '../core/send-guard';
 import { LoopGuard } from '../core/loop-guard';
+import { runGroupGuard } from '../core/content-guard';
+import { isSentByThisInstance, rememberSentMessage } from '../core/sent-messages';
 import {
     beginCollect,
     clearCollect,
@@ -55,11 +57,16 @@ function tryClaimReply(messageId: string, groupId: string): boolean {
 
 export async function handleMessage(ctx: NapCatPluginContext, event: OB11Message): Promise<void> {
     const config = pluginState.config;
-    if (!config.enabled) return;
-    pluginState.incrementProcessed();
 
     const kind = event.message_type;
     if (kind !== 'private' && kind !== 'group') return;
+
+    const text = extractText(event);
+    // 群内容守卫独立于自动回复总开关：命中即撤回/警告并短路，不再走规则与 FAQ
+    if (kind === 'group' && await runGroupGuard(ctx, event, text)) return;
+
+    if (!config.enabled) return;
+    pluginState.incrementProcessed();
 
     const senderId = String(event.sender?.user_id ?? 0);
     // self_id 优先取事件本身，其次取 init 时 get_login_info 的结果。
@@ -83,7 +90,6 @@ export async function handleMessage(ctx: NapCatPluginContext, event: OB11Message
     // ① 服务侧拉黑缓存:命中后任何回复都不发(含兜底与 AI)
     if (isBlocked(senderId, config.blocklist?.users)) return;
 
-    const text = extractText(event);
     if (!text) return;
 
     // 自回声保护：与本目标 60 秒内最后一条已发回复完全相同 → 丢弃，防被自己/对方复制触发
@@ -96,35 +102,12 @@ export async function handleMessage(ctx: NapCatPluginContext, event: OB11Message
     if (kind === 'private') {
         if (!config.private.enabled) return;
         if (!checkWhitelist(config.private.whitelist, senderId)) return;
-        // 追问中的用户消息优先作为答案消费，不再走关键词/FAQ
-        if (await consumeCollectAnswer(ctx, event, collectKey('private', senderId), senderId, undefined, text, 'private')) return;
-        const hit = matchKeywords(config.keywords, text);
-        const plan = planReply({
-            kind: 'private',
-            userId: senderId,
-            atBot: false,
-            rule: hit,
-            blockUsers: config.blocklist?.users,
-            kbEnabled: config.kbService?.enabled === true,
-            aiTrigger: config.aiTrigger,
-            groupAiEnabled: true,
-        });
-        // 规则命中(含 aiFallback/action)沿用原冷却粒度,冷却期内整条不发
-        if (isRuleCooldown(senderId, plan)) return;
-        const ask = needsAsk(plan) ? await askKnowledge(text, senderId, undefined, 'private') : null;
-        if (plan.kind === 'rule-human') {
-            if (startCollect(ctx, event, senderId, undefined, text, plan.rule.match, 'private')) return;
-            recordHandoff({ userId: senderId, text, rule: plan.rule.match, kind: 'private' });
-            reportHandoff({ userId: senderId, text });
+        // 追问中的消息是「答案」，必须逐条立即处理，不能参与连发合并
+        if (getCollect(pluginState.collectSessions, collectKey('private', senderId))) {
+            await processPrivateMessage(ctx, event, text);
+            return;
         }
-        const out = resolveSend({
-            plan,
-            ask: ask ? { reply: ask } : null,
-            kind: 'private',
-            defaultReply: config.fallback?.privateText ?? '',
-        });
-        if (!out.send || (!out.text && !out.image)) return;
-        scheduleReply(ctx, event, { text: out.text || '', image: out.image }, '[私聊] ' + senderId + sourceTag(out.source));
+        queuePrivateMessage(ctx, event, senderId, text);
         return;
     }
 
@@ -187,6 +170,104 @@ export async function handleMessage(ctx: NapCatPluginContext, event: OB11Message
         }
         scheduleReply(ctx, event, { text: out.text || '', image: out.image }, '[群聊] ' + groupId + sourceTag(out.source));
     }
+}
+
+/** 私聊连发合并：同一个用户窗口内的多条消息用换行拼接，只走一次问答 */
+const MAX_MERGED_PRIVATE_MESSAGES = 5;
+
+interface PrivateMergeBuffer {
+    texts: string[];
+    event: OB11Message;
+    timer: ReturnType<typeof setTimeout>;
+}
+
+const privateMergeBuffers = new Map<string, PrivateMergeBuffer>();
+
+/** 配置的合并窗口(毫秒)；0/非法值表示关闭，上限 60 秒 */
+function privateMergeWindowMs(): number {
+    const n = Number(pluginState.config.private?.mergeWindowMs ?? 0);
+    if (!Number.isFinite(n) || n <= 0) return 0;
+    return Math.min(60000, Math.floor(n));
+}
+
+/** 入缓冲；窗口内首条消息负责定时，满 5 条立即合并发送 */
+function queuePrivateMessage(ctx: NapCatPluginContext, event: OB11Message, senderId: string, text: string): void {
+    const windowMs = privateMergeWindowMs();
+    if (windowMs <= 0) {
+        void processPrivateMessage(ctx, event, text);
+        return;
+    }
+    const existing = privateMergeBuffers.get(senderId);
+    if (existing) {
+        existing.texts.push(text);
+        if (existing.texts.length >= MAX_MERGED_PRIVATE_MESSAGES) flushPrivateMerge(ctx, senderId);
+        return;
+    }
+    const buffer: PrivateMergeBuffer = {
+        texts: [text],
+        event,
+        timer: setTimeout(() => flushPrivateMerge(ctx, senderId), windowMs),
+    };
+    privateMergeBuffers.set(senderId, buffer);
+    pluginState.pendingReplies.add(buffer.timer);
+}
+
+/** 合并并处理；用首条消息的事件作为回复目标 */
+function flushPrivateMerge(ctx: NapCatPluginContext, senderId: string): void {
+    const buffer = privateMergeBuffers.get(senderId);
+    if (!buffer) return;
+    privateMergeBuffers.delete(senderId);
+    clearTimeout(buffer.timer);
+    pluginState.pendingReplies.delete(buffer.timer);
+    void processPrivateMessage(ctx, buffer.event, buffer.texts.join('\n'));
+}
+
+/** 插件卸载时清空未合并的消息，避免卸载后继续触发回复 */
+export function clearPrivateMerge(): void {
+    for (const buffer of privateMergeBuffers.values()) {
+        clearTimeout(buffer.timer);
+        pluginState.pendingReplies.delete(buffer.timer);
+    }
+    privateMergeBuffers.clear();
+}
+
+/** 私聊单次问答：合并后的文本也走原有冷却 / 配额 / 防互刷链路 */
+async function processPrivateMessage(ctx: NapCatPluginContext, event: OB11Message, text: string): Promise<void> {
+    const config = pluginState.config;
+    if (!config.private.enabled) return;
+    const senderId = String(event.sender?.user_id ?? event.user_id ?? 0);
+    if (!senderId || senderId === '0') return;
+    // 缓冲期间配置可能被改，发送前再核一次白名单
+    if (!checkWhitelist(config.private.whitelist, senderId)) return;
+    // 追问中的用户消息优先作为答案消费，不再走关键词/FAQ
+    if (await consumeCollectAnswer(ctx, event, collectKey('private', senderId), senderId, undefined, text, 'private')) return;
+    const hit = matchKeywords(config.keywords, text);
+    const plan = planReply({
+        kind: 'private',
+        userId: senderId,
+        atBot: false,
+        rule: hit,
+        blockUsers: config.blocklist?.users,
+        kbEnabled: config.kbService?.enabled === true,
+        aiTrigger: config.aiTrigger,
+        groupAiEnabled: true,
+    });
+    // 规则命中(含 aiFallback/action)沿用原冷却粒度,冷却期内整条不发
+    if (isRuleCooldown(senderId, plan)) return;
+    const ask = needsAsk(plan) ? await askKnowledge(text, senderId, undefined, 'private') : null;
+    if (plan.kind === 'rule-human') {
+        if (startCollect(ctx, event, senderId, undefined, text, plan.rule.match, 'private')) return;
+        recordHandoff({ userId: senderId, text, rule: plan.rule.match, kind: 'private' });
+        reportHandoff({ userId: senderId, text });
+    }
+    const out = resolveSend({
+        plan,
+        ask: ask ? { reply: ask } : null,
+        kind: 'private',
+        defaultReply: config.fallback?.privateText ?? '',
+    });
+    if (!out.send || (!out.text && !out.image)) return;
+    scheduleReply(ctx, event, { text: out.text || '', image: out.image }, '[私聊] ' + senderId + sourceTag(out.source));
 }
 
 /** 规则类计划共用的冷却键；AI/兜底不占用规则冷却 */
@@ -439,20 +520,37 @@ function isOnCooldown(senderId: string, ruleKey: string): boolean {
     return false;
 }
 
-/** 群消息是否指向机器人:@ 段目标为自身 QQ,或 reply 段(部分适配器会带原发送者 qq) */
+/**
+ * 群消息是否指向机器人：
+ * - at 段目标为自身 QQ；
+ * - reply/引用段指向自身 QQ（部分适配器带 qq）；
+ * - reply/引用段的 message_id 是本实例刚发出的消息（OneBot 常见形态，只有 id 没有 qq）。
+ */
 function isDirectedAtBot(event: OB11Message, selfId: string): boolean {
-    if (!selfId) return false;
     if (Array.isArray(event.message)) {
         return event.message.some((seg) => {
             const data = seg.data as Record<string, unknown> | undefined;
-            if (seg.type === 'at') return String(data?.qq ?? '') === selfId;
-            if (seg.type === 'reply') return String(data?.qq ?? '') === selfId;
+            if (seg.type === 'at') return !!selfId && String(data?.qq ?? '') === selfId;
+            if (seg.type === 'reply') {
+                const replyId = data?.id ?? data?.message_id;
+                if (selfId && String(data?.qq ?? '') === selfId) return true;
+                return isSentByThisInstance(replyId);
+            }
             return false;
         });
     }
     // 少数适配器把 message 下发成 CQ 字符串，退回 raw_message 匹配，避免 @ 判定失效
     const raw = typeof event.raw_message === 'string' ? event.raw_message : '';
-    return new RegExp('\\[CQ:(?:at|reply),qq=' + selfId + '(?:,|\\])').test(raw);
+    if (selfId && new RegExp('\\[CQ:(?:at|reply),qq=' + selfId + '(?:,|\\])').test(raw)) return true;
+    // CQ 字符串里的引用段通常只有 id: [CQ:reply,id=123]
+    for (const match of raw.matchAll(/\[CQ:reply,([^\]]*)\]/g)) {
+        const rawId = /(?:^|,)id=([^,]+)/.exec(match[1] ?? '')?.[1];
+        if (!rawId) continue;
+        let id = rawId;
+        try { id = decodeURIComponent(rawId); } catch { /* 保留原值 */ }
+        if (isSentByThisInstance(id)) return true;
+    }
+    return false;
 }
 
 /** 按配置的随机延迟安排回复,拟人化防风控;延迟为 0 时立即发送 */
@@ -690,7 +788,9 @@ async function replyMessage(ctx: NapCatPluginContext, event: OB11Message, conten
         params.user_id = String(event.user_id);
         params.message_type = "private";
     }
-    await ctx.actions.call("send_msg", params, ctx.adapterName, ctx.pluginManager.config);
+    const result = await ctx.actions.call("send_msg", params, ctx.adapterName, ctx.pluginManager.config);
+    // 记下 message_id：群里有人引用这条回复时，即使没有 @ 也按定向提问处理
+    rememberSentMessage(result);
 }
 
 /**
@@ -708,5 +808,6 @@ export async function sendRelayMessage(
     const params: Record<string, unknown> = target.groupId
         ? { message_type: "group", group_id: target.groupId, message: segments }
         : { message_type: "private", user_id: target.userId, message: segments };
-    await ctx.actions.call("send_msg", params, ctx.adapterName, ctx.pluginManager.config);
+    const result = await ctx.actions.call("send_msg", params, ctx.adapterName, ctx.pluginManager.config);
+    rememberSentMessage(result);
 }

@@ -31,7 +31,7 @@ fs.writeFileSync(
     cooldownSeconds: 0,
     replyDelayMinMs: 0,
     replyDelayMaxMs: 0,
-    private: { enabled: true, whitelist: [] },
+    private: { enabled: true, whitelist: [], mergeWindowMs: 0 },
     group: { enabled: true, whitelist: [] },
     fallback: { privateText: "私聊兜底话术", groupAtText: "群@兜底话术" },
     collect: { enabled: false, questions: [] },
@@ -381,7 +381,7 @@ console.log("ok 12 - 连续 3 次失败后熔断且不再发送");
 pluginState.config = sanitizeConfig({
   ...JSON.parse(fs.readFileSync(configPath, "utf-8")),
   kbService: { enabled: false },
-  private: { enabled: true, whitelist: [] },
+  private: { enabled: true, whitelist: [], mergeWindowMs: 0 },
   keywords: [{ match: "下载", matchType: "contains", reply: "给你下载地址", action: "reply", image: "https://cdn.example/x.png" }],
 });
 pluginState.config.replyDelayMinMs = 0;
@@ -428,7 +428,7 @@ try {
   pluginState.config = sanitizeConfig({
     ...JSON.parse(fs.readFileSync(configPath, "utf-8")),
     kbService: { enabled: false },
-    private: { enabled: true, whitelist: [] },
+    private: { enabled: true, whitelist: [], mergeWindowMs: 0 },
     keywords: [{ match: "大图", reply: "只有文字", action: "reply", image: bigPath }],
   });
   pluginState.config.replyDelayMinMs = 0;

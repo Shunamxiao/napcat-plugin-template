@@ -68,6 +68,8 @@ export interface PrivateConfig {
     whitelist: (number | string)[];
     /** WebUI 编辑用的多行文本形式(每行一个 QQ 号,# 注释,不参与匹配) */
     whitelistText?: string;
+    /** 同一私聊用户连续消息合并窗口(毫秒)；3 秒内多条合并成一次问答，最多 5 条；0 = 关闭 */
+    mergeWindowMs: number;
 }
 
 /** 群聊配置 */
@@ -164,6 +166,27 @@ export interface LoopGuardConfig {
     pauseSeconds: number;
 }
 
+/** 群内容守卫命中后的动作：撤回 | 警告 | 撤回并警告 */
+export type GuardAction = "recall" | "warn" | "both";
+
+/** 群内容守卫：群消息命中屏蔽词时自动撤回（群管理能力，独立开关） */
+export interface GuardConfig {
+    /** 总开关（默认 false） */
+    enabled: boolean;
+    /** 生效群号；空 = 所有已启用自动回复的群 */
+    groupIds: (number | string)[];
+    /** WebUI 编辑用的多行文本形式(每行一个群号,不参与匹配) */
+    groupIdsText?: string;
+    /** 屏蔽词表；空 = 不撤回任何消息 */
+    words: string[];
+    /** WebUI 编辑用的多行文本形式(每行一个词,不参与匹配) */
+    wordsText?: string;
+    /** 命中动作：recall(默认，仅撤回) | warn(仅警告) | both(撤回并警告) */
+    action: GuardAction;
+    /** action=warn/both 时发送的群提示语 */
+    warnText: string;
+}
+
 export interface PluginConfig {
     enabled: boolean;
     debug: boolean;
@@ -200,6 +223,8 @@ export interface PluginConfig {
     ignoreSendersText?: string;
     /** 群内回复对刷熔断 */
     loopGuard: LoopGuardConfig;
+    /** 群内容守卫（屏蔽词撤回） */
+    guard: GuardConfig;
     /** 各群独立启用配置(群管理页使用) */
     groupConfigs: Record<string, GroupConfig>;
     /** 群级规则：键为群号，未配置的群沿用全局规则 */
