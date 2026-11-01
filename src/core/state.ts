@@ -37,6 +37,19 @@ export function maskConfig(config: PluginConfig): PluginConfig {
     };
 }
 
+/**
+ * 防外泄：改服务地址（baseUrl）必须同时提交新令牌。
+ * 否则拿到地址的人可以把 baseUrl 指向自己的域名，定时同步就会把已存令牌发过去。
+ */
+function assertEndpointChangeSafe(current: PluginConfig['kbService'], incoming: Partial<PluginConfig['kbService']> | undefined): void {
+    if (!incoming) return;
+    const nextBase = typeof incoming.baseUrl === 'string' ? incoming.baseUrl.trim().replace(/\/+$/, '') : '';
+    if (!nextBase || nextBase === current.baseUrl) return;
+    if (isTokenPlaceholder(incoming.token)) {
+        throw new Error('修改服务地址时必须同时重新填写访问令牌');
+    }
+}
+
 function isObject(v: unknown): v is Record<string, unknown> {
     return v !== null && typeof v === 'object' && !Array.isArray(v);
 }
@@ -419,6 +432,7 @@ class PluginState {
         }
         // 知识库/AI 相关嵌套对象同样先合并旧值，避免部分提交时丢字段
         if (partial.kbService) {
+            assertEndpointChangeSafe(this.config.kbService, partial.kbService);
             merged.kbService = { ...this.config.kbService, ...partial.kbService };
             // 空串 / 占位符 / 未提交 = 保持原令牌；只有新值才覆盖
             if (isTokenPlaceholder(partial.kbService.token)) {
@@ -444,9 +458,12 @@ class PluginState {
         const next: PluginConfig = { ...config };
         if (!next.kbService) {
             next.kbService = this.config.kbService;
-        } else if (isTokenPlaceholder(next.kbService.token)) {
-            // 页面/原生配置面板回传的是占位符或空串 → 沿用磁盘上的真令牌
-            next.kbService = { ...next.kbService, token: this.config.kbService.token };
+        } else {
+            assertEndpointChangeSafe(this.config.kbService, next.kbService);
+            if (isTokenPlaceholder(next.kbService.token)) {
+                // 页面/原生配置面板回传的是占位符或空串 → 沿用磁盘上的真令牌
+                next.kbService = { ...next.kbService, token: this.config.kbService.token };
+            }
         }
         this.config = sanitizeConfig(next);
         this.saveConfig();

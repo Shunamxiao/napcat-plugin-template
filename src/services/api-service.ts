@@ -64,7 +64,7 @@ export function registerApiRoutes(ctx: NapCatPluginContext): void {
             res.json({ code: 0, message: 'ok' });
         } catch (err) {
             ctx.logger.error('保存配置失败:', err);
-            res.status(500).json({ code: -1, message: String(err) });
+            res.status(500).json({ code: -1, message: err instanceof Error ? err.message : String(err) });
         }
     });
 
