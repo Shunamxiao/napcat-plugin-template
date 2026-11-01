@@ -251,6 +251,7 @@ export function sanitizeConfig(raw: unknown): PluginConfig {
             action: raw.guard.action === 'warn' || raw.guard.action === 'both' ? raw.guard.action : 'recall',
             words: Array.isArray(raw.guard.words) ? uniqueStrings(raw.guard.words) : out.guard.words,
             warnText: typeof raw.guard.warnText === 'string' ? raw.guard.warnText : out.guard.warnText,
+            wordsRefreshMs: clampInt(raw.guard.wordsRefreshMs, 1000, 86400000, out.guard.wordsRefreshMs),
         };
         if (typeof raw.guard.groupIdsText === 'string') out.guard.groupIdsText = raw.guard.groupIdsText;
         if (typeof raw.guard.wordsText === 'string') out.guard.wordsText = raw.guard.wordsText;
@@ -356,6 +357,12 @@ class PluginState {
     /** 转人工追问会话: key = private:qq / group:群号:qq */
     collectSessions: Map<string, CollectSession> = new Map();
 
+    /** 服务侧下发的群守卫词表（仅内存缓存；拉取失败保留上次成功结果） */
+    serviceGuardWords: string[] = [];
+
+    /** 服务降级提示记录: user -> 上次发送时间戳（同一用户 10 分钟只提示一次） */
+    serviceDownNotified: Map<string, number> = new Map();
+
     /** 运行时统计 */
     stats = {
         processed: 0,
@@ -422,6 +429,7 @@ class PluginState {
         }
         this.collectSessions.clear();
         this.replyCooldowns.clear();
+        this.serviceDownNotified.clear();
         this.saveConfig();
         this._ctx = null;
     }

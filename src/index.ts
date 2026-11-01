@@ -33,6 +33,7 @@ import { DEFAULT_CONFIG, buildConfigSchema, groupRulesToText, idListToText, keyw
 import { maskConfig, pluginState } from './core/state';
 import { buildGroupPolicies } from './core/policy';
 import { startBlocklistSync, stopBlocklistSync } from './core/blocklist';
+import { startGuardWordsSync, stopGuardWordsSync } from './core/guard-words';
 import { clearPrivateMerge, handleMessage } from './handlers/message-handler';
 import { handleOneBotEvent } from './handlers/event-handler';
 import { registerApiRoutes } from './services/api-service';
@@ -67,6 +68,8 @@ export const plugin_init: PluginModule['plugin_init'] = async (ctx) => {
 
         // 5. 拉黑名单：先拉一次，之后按 syncSeconds 定时拉取
         startBlocklistSync();
+        // 6. 服务侧守卫词表：启动拉一次，之后按 guard.wordsRefreshMs 刷新
+        startGuardWordsSync();
 
         ctx.logger.info('插件初始化完成');
     } catch (error) {
@@ -106,8 +109,9 @@ export const plugin_onevent: PluginModule['plugin_onevent'] = async (ctx, event)
  */
 export const plugin_cleanup: PluginModule['plugin_cleanup'] = async (ctx) => {
     try {
-        // 先停拉黑同步定时器，再清理插件状态（热重载不泄漏）
+        // 先停拉黑/词表同步定时器，再清理插件状态（热重载不泄漏）
         stopBlocklistSync();
+        stopGuardWordsSync();
         clearPrivateMerge();
         pluginState.cleanup();
         ctx.logger.info('插件已卸载');
@@ -178,7 +182,9 @@ export const plugin_set_config: PluginModule['plugin_set_config'] = async (ctx, 
         };
         const gids = syncLines(cfg.guard.groupIds, cfg.guard.groupIdsText);
         const words = syncLines(cfg.guard.words, cfg.guard.wordsText);
-        cfg.guard = { ...cfg.guard, groupIds: gids.list, groupIdsText: gids.text, words: words.list, wordsText: words.text };
+        // 老页面没提交刷新间隔时沿用当前值，避免一次保存把 5 分钟重置成默认值
+        const refreshMs = cfg.guard.wordsRefreshMs ?? pluginState.config.guard.wordsRefreshMs;
+        cfg.guard = { ...cfg.guard, groupIds: gids.list, groupIdsText: gids.text, words: words.list, wordsText: words.text, wordsRefreshMs: refreshMs };
     }
 
     // 群级规则:合法 JSON 文本覆盖结构化规则;非法文本忽略,且不丢失已有规则
@@ -202,6 +208,8 @@ export const plugin_set_config: PluginModule['plugin_set_config'] = async (ctx, 
     if (!cfg.loopGuard) cfg.loopGuard = pluginState.config.loopGuard;
 
     pluginState.replaceConfig(cfg);
+    // 刷新间隔/服务地址可能刚被改过：重启词表定时器并立即同步一次
+    startGuardWordsSync();
     ctx.logger.info('配置已通过 WebUI 更新, 当前规则数:', Array.isArray(cfg.keywords) ? cfg.keywords.length : 0);
 };
 
@@ -260,7 +268,7 @@ button.gray{background:#8a8f9c}button.danger{background:#e5484d}
 <div class="card"><h2>关键词规则</h2><p class="muted">每条规则一行：匹配词 + 类型（包含/前缀/正则）+ 回复话术。回复可填多条，用 ||| 分隔，命中后随机选一条；正则示例：^有.+ 或 下载|安装。<br>图片只支持 <b>jpg/png/webp/gif</b>（avif 等格式 QQ 不显示，会被跳过）；建议用 CDN 直链，小图可用 base64://。</p><div id="kw-list"></div><div class="row"><button class="gray" id="kw-add">+ 添加规则</button></div></div>
 <div class="card"><h2>群聊</h2><div class="row"><label><input type="checkbox" id="gr-enabled"> 开启群消息自动回复</label><label><input type="checkbox" id="gr-atonly"> 仅被 @ 时回复</label></div><div class="row"><label>冷却（秒）</label><input type="number" id="cooldown" class="w-match" min="0"> <label>延迟(ms)</label><input type="number" id="delay-min" class="w-match" min="0"> ~ <input type="number" id="delay-max" class="w-match" min="0"></div><p class="muted">冷却：同一人触发同一规则的最短间隔；延迟：回复前随机等待，拟人防风控。</p></div>
 <div class="card"><h2>防对刷</h2><p class="muted">两个机器人同群跑同一套规则时会互相触发。忽略的发送者命中后直接丢弃（不记冷却、不回复）；自回声：消息与本群/本用户 60 秒内最后一条已发回复完全相同也会丢弃；群内对刷熔断：窗口内发出达到阈值即暂停该群。<br><b>两个实例都要填：忽略的发送者 = 1457278554、3788767702。</b></p><div class="row"><label>忽略的 QQ 号</label><textarea id="ignore-senders" rows="3" placeholder="每行一个 QQ 号"></textarea></div><div class="row"><label>熔断阈值(条)</label><input type="number" id="lg-max" class="w-match" min="1" max="100"> <label>窗口(秒)</label><input type="number" id="lg-window" class="w-match" min="1" max="3600"> <label>暂停(秒)</label><input type="number" id="lg-pause" class="w-match" min="1" max="86400"></div></div>
-<div class="card"><h2>群内容守卫</h2><p class="muted">群消息正文命中屏蔽词时自动撤回。只处理群消息，不踢人、不禁言；撤回失败只记日志、不重试。词表每行一个（大小写不敏感）；生效群号留空 = 所有已启用自动回复的群。</p><div class="row"><label><input type="checkbox" id="guard-enabled"> 启用群内容守卫</label><label>命中动作</label><select id="guard-action"><option value="recall">仅撤回</option><option value="warn">仅警告</option><option value="both">撤回并警告</option></select></div><div class="row"><label>生效群号</label><textarea id="guard-groups" rows="3" placeholder="每行一个群号；留空 = 所有已启用群"></textarea></div><div class="row"><label>屏蔽词</label><textarea id="guard-words" rows="4" placeholder="每行一个词"></textarea></div><div class="row"><label>警告话术</label><input type="text" id="guard-warn-text" class="w-reply" placeholder="action=警告时发到群里"></div></div>
+<div class="card"><h2>群内容守卫</h2><p class="muted">群消息正文命中屏蔽词时自动撤回。只处理群消息，不踢人、不禁言；撤回失败只记日志、不重试。词表每行一个（大小写不敏感）；本地词表始终生效，并叠加服务 /blocklist 下发的 words。生效群号留空 = 所有已启用自动回复的群。</p><div class="row"><label><input type="checkbox" id="guard-enabled"> 启用群内容守卫</label><label>命中动作</label><select id="guard-action"><option value="recall">仅撤回</option><option value="warn">仅警告</option><option value="both">撤回并警告</option></select></div><div class="row"><label>生效群号</label><textarea id="guard-groups" rows="3" placeholder="每行一个群号；留空 = 所有已启用群"></textarea></div><div class="row"><label>屏蔽词</label><textarea id="guard-words" rows="4" placeholder="每行一个词"></textarea></div><div class="row"><label>警告话术</label><input type="text" id="guard-warn-text" class="w-reply" placeholder="action=警告时发到群里"></div><div class="row"><label>服务词表刷新(毫秒)</label><input type="number" id="guard-refresh" class="w-match" min="1000" max="86400000"></div></div>
 <div class="card"><h2>群级规则（可选）</h2><p class="muted">按群单独配置（仍受上方群聊总开关控制）。<b>只有列在下面的群才会被处理，未列出的群一律静默（即使被 @ 也不回）。</b>可关闭本群自动回复、设置仅 @ 时回复，或配置本群专属关键词。本群专属关键词留空时沿用全局关键词；回复多条用 ||| 分隔。</p><div id="grp-list"></div><p class="muted" id="grp-empty">尚未添加群级规则。</p><div class="row"><button class="gray" id="grp-add">+ 添加群规则</button></div><div class="row" id="grp-add-row" style="display:none"><input type="text" id="grp-new-id" class="w-match" inputmode="numeric" placeholder="群号（纯数字）"><button id="grp-add-confirm">确定添加</button><button class="gray" id="grp-add-cancel">取消</button></div></div>
 <div class="card"><h2>知识库 / AI</h2><p class="muted">开启后：未命中关键词的私聊/群消息会先问知识库服务；命中规则且勾选「允许升级 AI」时也先问服务，拿不到答案再退回规则话术。服务不可用时保持原有自动回复。</p><div class="row"><label><input type="checkbox" id="kb-enabled"> 启用知识库 / AI</label><label>超时(ms)</label><input type="number" id="kb-timeout" class="w-match" min="500" max="60000"></div><div class="row"><label>服务地址</label><input type="text" id="kb-baseurl" class="w-reply" placeholder="https://qqbot.theworld.codes"></div><div class="row"><label>访问令牌</label><input type="password" id="kb-token" class="w-reply" autocomplete="new-password" placeholder="x-bot-token（留空 = 不调用服务）"></div><div class="row"><label><input type="checkbox" id="ai-private"> 私聊未命中升级 AI</label><label><input type="checkbox" id="ai-group-atonly"> 群内仅 @ / 回复机器人时升级 AI</label></div><div class="row"><label>拉黑缓存（只读，权威在服务侧）</label><span class="muted" id="bl-synced">尚未同步</span></div><div id="bl-list" style="max-height:130px;overflow:auto;font-size:13px;line-height:1.6;background:#fbfcff;border:1px solid #e4e7f2;border-radius:8px;padding:8px"></div></div>
 <div class="card"><h2>机器人能力</h2><p class="muted">以下能力独立于上方「启用自动回复」总开关，默认全部关闭。</p><div class="row"><label><input type="checkbox" id="at-reply"> 群聊回复时 @ 触发者</label></div><div class="row"><label><input type="checkbox" id="gw-enabled"> 入群欢迎</label><label>模板</label><input type="text" id="gw-template" class="w-reply" placeholder="欢迎 {user_id} 加入本群！支持 {group_id}、{user_id}"></div><div class="row"><label>发送失败熔断：群</label><input type="number" id="sg-group" class="w-match" min="1" max="100"> 次 <label>私聊</label><input type="number" id="sg-private" class="w-match" min="1" max="100"> 次 <label>冷却(秒)</label><input type="number" id="sg-cooldown" class="w-match" min="1" max="86400"></div><p class="muted">同一群/同一用户连续发送失败达阈值即暂停发送，冷却结束自动恢复；QQ 侧拒绝不重试，网络/超时错误间隔 2 秒重试一次。</p><div class="row"><label><input type="checkbox" id="fr-autoaccept"> 自动通过好友申请</label><span class="muted">高风险，建议仅小号开启</span></div></div>
@@ -378,6 +386,7 @@ function render(){
   el('guard-groups').value = Array.isArray(gd.groupIds) ? gd.groupIds.join(String.fromCharCode(10)) : '';
   el('guard-words').value = Array.isArray(gd.words) ? gd.words.join(String.fromCharCode(10)) : '';
   el('guard-warn-text').value = gd.warnText != null ? gd.warnText : '';
+  el('guard-refresh').value = gd.wordsRefreshMs != null ? gd.wordsRefreshMs : 300000;
   var fb = cfg.fallback || {};
   el('fb-private').value = fb.privateText != null ? fb.privateText : '';
   el('fb-group-at').value = fb.groupAtText != null ? fb.groupAtText : '';
@@ -463,7 +472,8 @@ function collect(){
       groupIds: el('guard-groups').value.split(String.fromCharCode(10)).map(function(s){ return s.trim(); }).filter(Boolean),
       words: el('guard-words').value.split(String.fromCharCode(10)).map(function(s){ return s.trim(); }).filter(Boolean),
       action: el('guard-action').value,
-      warnText: el('guard-warn-text').value.trim()
+      warnText: el('guard-warn-text').value.trim(),
+      wordsRefreshMs: Number(el('guard-refresh').value || 300000)
     },
     kbService: { enabled: el('kb-enabled').checked, baseUrl: el('kb-baseurl').value.trim(), token: el('kb-token').value.trim(), timeoutMs: Number(el('kb-timeout').value || 8000) },
     aiTrigger: { private: el('ai-private').checked, groupAtOnly: el('ai-group-atonly').checked },
@@ -576,18 +586,19 @@ function registerWebUI(ctx: NapCatPluginContext): void {
 // ==================== 纯逻辑导出（仅 test/escalation.mjs 使用） ====================
 // 不参与插件生命周期；NapCat 只读取上面约定的钩子。
 export { isBlocked, syncBlocklist, startBlocklistSync, stopBlocklistSync } from './core/blocklist';
+export { syncGuardWords, startGuardWordsSync, stopGuardWordsSync } from './core/guard-words';
 export { pickReply, planReply, resolveSend } from './core/escalation';
 export { isGroupConfigured, resolveGroupPolicy, resolveGroupFallback, buildGroupPolicies } from './core/policy';
 export { appendHandoffRecord } from './core/handoff';
 export { classifySendError, sendWithRetry, MIN_RETRY_DELAY_MS } from './core/send-retry';
 export { SendGuard } from './core/send-guard';
 export { LoopGuard } from './core/loop-guard';
-export { matchGuardWord, runGroupGuard, guardTargetsGroup } from './core/content-guard';
+export { matchGuardWord, runGroupGuard, guardTargetsGroup, mergeGuardWords } from './core/content-guard';
 export { rememberSentMessage, isSentByThisInstance, clearSentMessages } from './core/sent-messages';
 export { beginCollect, clearCollect, collectKey, getCollect, stepCollect, COLLECT_TIMEOUT_MS } from './core/collect';
 export { keywordsToText, textToKeywords } from './config';
 export { resolveWelcome } from './handlers/event-handler';
-export { handleMessage, resolveImageSource, sendRelayMessage, clearPrivateMerge } from './handlers/message-handler';
+export { handleMessage, resolveImageSource, sendRelayMessage, clearPrivateMerge, SERVICE_DOWN_REPLY } from './handlers/message-handler';
 export { registerApiRoutes } from './services/api-service';
-export { notifyHandoff } from './services/kb-client';
+export { notifyHandoff, askServiceOutcome, fetchGuardWords } from './services/kb-client';
 export { sanitizeConfig, pluginState } from './core/state';

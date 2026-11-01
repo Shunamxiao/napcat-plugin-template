@@ -23,6 +23,7 @@ import type {
 } from 'napcat-types/napcat-onebot/network/plugin/types';
 import { timingSafeEqual } from 'crypto';
 import { maskConfig, pluginState } from '../core/state';
+import { startGuardWordsSync } from '../core/guard-words';
 import { buildGroupPolicies } from '../core/policy';
 import { resolveImageSource, sendRelayMessage } from '../handlers/message-handler';
 
@@ -75,6 +76,8 @@ export function registerApiRoutes(ctx: NapCatPluginContext): void {
                 return res.status(400).json({ code: -1, message: '请求体为空' });
             }
             pluginState.updateConfig(body as Partial<import('../types').PluginConfig>);
+            // 刷新间隔/服务地址可能刚被改过：重启词表定时器并立即同步一次
+            if (body.guard !== undefined || body.kbService !== undefined) startGuardWordsSync();
             ctx.logger.info('配置已保存');
             res.json({ code: 0, message: 'ok' });
         } catch (err) {

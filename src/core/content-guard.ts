@@ -11,6 +11,23 @@ import { pluginState } from './state';
 import { isGroupConfigured, resolveGroupPolicy } from './policy';
 import type { GuardAction, GuardConfig } from '../types';
 
+/** 本地词表 + 服务词表叠加；本地优先，去重后返回（任一命中即触发） */
+export function mergeGuardWords(local: unknown, remote: unknown): string[] {
+    const out: string[] = [];
+    const seen = new Set<string>();
+    for (const source of [local, remote]) {
+        if (!Array.isArray(source)) continue;
+        for (const item of source) {
+            if (typeof item !== 'string') continue;
+            const word = item.trim();
+            if (!word || seen.has(word)) continue;
+            seen.add(word);
+            out.push(word);
+        }
+    }
+    return out;
+}
+
 /** 命中判断：大小写不敏感，返回命中的原词（用于日志），未命中返回 null */
 export function matchGuardWord(text: string, words: unknown): string | null {
     const haystack = String(text ?? '').toLowerCase();
@@ -62,7 +79,7 @@ export async function runGroupGuard(
     const groupId = String(event.group_id ?? '');
     if (!groupId || !guardTargetsGroup(config, groupId)) return false;
 
-    const word = matchGuardWord(text, config.words);
+    const word = matchGuardWord(text, mergeGuardWords(config.words, pluginState.serviceGuardWords));
     if (!word) return false;
 
     const user = String(event.sender?.user_id ?? event.user_id ?? '');

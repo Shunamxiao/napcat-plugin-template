@@ -24,12 +24,17 @@ import {
     type CollectAnswer,
     type CollectSession,
 } from '../core/collect';
-import { askService, notifyHandoff } from '../services/kb-client';
+import { askServiceOutcome, notifyHandoff, type ServiceFailure } from '../services/kb-client';
 import type { KeywordRule } from '../types';
 import fs from 'fs';
 import path from 'path';
 
 const CLAIM_DIR = '/root/qq-accounts/shared/claims';
+
+/** /answer 超时、5xx、连接失败时给用户的一次性降级提示 */
+export const SERVICE_DOWN_REPLY = '我这边有点卡，先记下你的问题，稍后再试一次～';
+/** 同一用户 10 分钟内最多收到一次服务降级提示，避免连发刷屏 */
+export const SERVICE_DOWN_NOTIFY_INTERVAL_MS = 10 * 60 * 1000;
 
 /** 多账号同群防重复:同一群同一条消息只允许一个实例回复(跨实例共享 claim 文件) */
 function tryClaimReply(messageId: string, groupId: string): boolean {
@@ -149,6 +154,14 @@ export async function handleMessage(ctx: NapCatPluginContext, event: OB11Message
         // 多账号同群去重:规则回复与 AI 回复都只允许一个实例发
         if (!tryClaimReply(String(event.message_id ?? ''), groupId)) { skip('去重命中'); return; }
         const ask = needsAsk(plan) ? await askKnowledge(text, senderId, groupId, 'group_at') : null;
+        if (ask?.failure) {
+            // 只对已定向（@/引用机器人）的群消息回降级提示；未定向保持原规则/静默逻辑
+            if (atBot) {
+                respondServiceDown(ctx, event, senderId, ask.failure, groupId);
+                return;
+            }
+            pluginState.logger.debug('[知识库] 群内未定向，服务失败不降级 group=' + groupId + ' user=' + senderId);
+        }
         if (plan.kind === 'rule-human') {
             if (startCollect(ctx, event, senderId, groupId, text, plan.rule.match, 'group')) return;
             recordHandoff({ userId: senderId, groupId, text, rule: plan.rule.match, kind: 'group' });
@@ -157,7 +170,7 @@ export async function handleMessage(ctx: NapCatPluginContext, event: OB11Message
         const fallback = resolveGroupFallback(config, groupId);
         const out = resolveSend({
             plan,
-            ask: ask ? { reply: ask } : null,
+            ask: ask?.reply ? { reply: ask.reply } : null,
             kind: 'group',
             atBot,
             groupFallback: fallback.groupAtText,
@@ -255,6 +268,10 @@ async function processPrivateMessage(ctx: NapCatPluginContext, event: OB11Messag
     // 规则命中(含 aiFallback/action)沿用原冷却粒度,冷却期内整条不发
     if (isRuleCooldown(senderId, plan)) return;
     const ask = needsAsk(plan) ? await askKnowledge(text, senderId, undefined, 'private') : null;
+    if (ask?.failure) {
+        respondServiceDown(ctx, event, senderId, ask.failure);
+        return;
+    }
     if (plan.kind === 'rule-human') {
         if (startCollect(ctx, event, senderId, undefined, text, plan.rule.match, 'private')) return;
         recordHandoff({ userId: senderId, text, rule: plan.rule.match, kind: 'private' });
@@ -262,7 +279,7 @@ async function processPrivateMessage(ctx: NapCatPluginContext, event: OB11Messag
     }
     const out = resolveSend({
         plan,
-        ask: ask ? { reply: ask } : null,
+        ask: ask?.reply ? { reply: ask.reply } : null,
         kind: 'private',
         defaultReply: config.fallback?.privateText ?? '',
     });
@@ -462,28 +479,78 @@ function cleanTextForAi(text: string): string {
     return text.replace(/\[CQ:[^\]]*\]/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
+interface AskKnowledgeResult {
+    reply: string | null;
+    /** 仅超时 / 5xx / 连接失败等需要用户侧降级的失败；4xx 不降级 */
+    failure?: ServiceFailure;
+}
+
 /**
- * 问一次知识库/AI；返回非空回复文本。
- * 任何失败(未启用/空文本/超时/非 200/空 reply)都返回 null，由调用方回退，绝不抛异常。
+ * 问一次知识库/AI；返回可发送文本与失败类型。
+ * 未启用/空文本/4xx 返回空 reply，由调用方按原逻辑回退；
+ * 超时 / 5xx / 连接失败返回 failure，由调用方决定是否发降级提示。
+ * 绝不抛异常。
  */
 async function askKnowledge(
     text: string,
     userId: string,
     groupId: string | undefined,
     trigger: 'private' | 'group_at',
-): Promise<string | null> {
+): Promise<AskKnowledgeResult> {
     const cfg = pluginState.config.kbService;
-    if (!cfg?.enabled) return null;
+    if (!cfg?.enabled) return { reply: null };
     const cleaned = cleanTextForAi(text);
-    if (!cleaned) return null;
-    const res = await askService(cfg, { text: cleaned, userId, groupId, trigger });
+    if (!cleaned) return { reply: null };
+    const outcome = await askServiceOutcome(cfg, { text: cleaned, userId, groupId, trigger });
     const tag = trigger + ' user=' + userId + ' group=' + (groupId || '-');
+    if (outcome.failure) {
+        // 4xx 通常是配置/令牌问题，不属于「服务卡了」，不进用户降级链路
+        if (outcome.failure.kind === 'http' && (outcome.failure.status ?? 0) < 500) {
+            pluginState.logger.debug('[知识库] 调用失败 status=http code=' + (outcome.failure.status ?? '-') + ' ' + tag);
+            return { reply: null };
+        }
+        return { reply: null, failure: outcome.failure };
+    }
+    const res = outcome.response;
     if (!res) {
-        pluginState.logger.debug('[知识库] 调用失败/超时 ' + tag);
-        return null;
+        pluginState.logger.debug('[知识库] 未发起请求（服务地址/令牌未配置） ' + tag);
+        return { reply: null };
     }
     pluginState.logger.info('[知识库] ' + tag + ' action=' + res.action + ' score=' + (res.score ?? '-'));
-    return res.reply.trim() || null;
+    return { reply: res.reply.trim() || null };
+}
+
+/** 同一用户 10 分钟内只允许一条降级提示；返回 true 表示本次可发 */
+function allowServiceDownNotice(userId: string): boolean {
+    const now = Date.now();
+    const map = pluginState.serviceDownNotified;
+    for (const [key, ts] of map) {
+        if (now - ts >= SERVICE_DOWN_NOTIFY_INTERVAL_MS) map.delete(key);
+    }
+    const last = map.get(userId);
+    if (last !== undefined && now - last < SERVICE_DOWN_NOTIFY_INTERVAL_MS) return false;
+    map.set(userId, now);
+    return true;
+}
+
+/** 服务降级：记录 reason=service_down status=…，同一用户 10 分钟内只回一次固定文案 */
+function respondServiceDown(
+    ctx: NapCatPluginContext,
+    event: OB11Message,
+    senderId: string,
+    failure: ServiceFailure,
+    groupId?: string,
+): void {
+    pluginState.logger.warn(
+        '[知识库] reason=service_down status=' + failure.kind +
+        (failure.status !== undefined ? ' code=' + failure.status : '') +
+        ' user=' + senderId + (groupId ? ' group=' + groupId : ''),
+    );
+    if (!allowServiceDownNotice(senderId)) {
+        pluginState.logger.debug('[服务降级] 10 分钟内已提示过，本次静默 user=' + senderId);
+        return;
+    }
+    scheduleReply(ctx, event, { text: SERVICE_DOWN_REPLY }, '[服务降级] ' + (groupId ? '群 ' + groupId + ' ' : '私聊 ') + senderId);
 }
 
 /** 关键词匹配:prefix=前缀,contains=包含(默认)。返回命中的规则本身,便于以规则为粒度做冷却 */

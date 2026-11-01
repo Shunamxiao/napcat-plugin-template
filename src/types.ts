@@ -185,6 +185,8 @@ export interface GuardConfig {
     action: GuardAction;
     /** action=warn/both 时发送的群提示语 */
     warnText: string;
+    /** 服务词表刷新间隔(毫秒，默认 300000)；本地 words 始终叠加生效 */
+    wordsRefreshMs: number;
 }
 
 export interface PluginConfig {

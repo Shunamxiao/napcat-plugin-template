@@ -22,6 +22,21 @@ export interface AskResponse {
     score?: number;
 }
 
+/** /answer 失败类型：http 非 2xx、timeout 超时、err 连接/解析失败 */
+export type ServiceFailureKind = 'http' | 'timeout' | 'err';
+
+export interface ServiceFailure {
+    kind: ServiceFailureKind;
+    /** kind=http 时的 HTTP 状态码 */
+    status?: number;
+}
+
+/** 问服务的结果：response 与 failure 至多一个非空；未配置时两者都为空 */
+export interface AskOutcome {
+    response: AskResponse | null;
+    failure: ServiceFailure | null;
+}
+
 export interface HandoffRequest {
     userId: string;
     groupId?: string;
@@ -52,25 +67,92 @@ function timeoutOf(cfg: KbServiceConfig): number {
     return Math.min(MAX_TIMEOUT_MS, Math.max(MIN_TIMEOUT_MS, Math.round(n)));
 }
 
-/** 统一的带超时请求；任何失败都收敛成 null。 */
+type JsonOutcome =
+    | { ok: true; data: unknown }
+    | { ok: false; failure: ServiceFailure };
+
+function isAbortError(error: unknown, controller: AbortController): boolean {
+    if (controller.signal.aborted) return true;
+    const name = error instanceof Error ? error.name : (error as { name?: unknown } | null)?.name;
+    return String(name ?? '') === 'AbortError';
+}
+
+/** 统一的带超时请求；把失败拆成 timeout / http / err，供调用方决定是否降级 */
+async function requestJsonOutcome(
+    cfg: KbServiceConfig,
+    path: string,
+    init: RequestInit,
+    fetchImpl: FetchLike,
+): Promise<JsonOutcome> {
+    if (!cfg?.baseUrl || !cfg.token) return { ok: false, failure: { kind: 'err' } };
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutOf(cfg));
+    try {
+        const res = await fetchImpl(endpoint(cfg.baseUrl, path), { ...init, signal: controller.signal });
+        if (!res.ok) return { ok: false, failure: { kind: 'http', status: res.status } };
+        try {
+            return { ok: true, data: (await res.json()) as unknown };
+        } catch {
+            return { ok: false, failure: { kind: 'err' } };
+        }
+    } catch (error) {
+        return { ok: false, failure: { kind: isAbortError(error, controller) ? 'timeout' : 'err' } };
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
+/** 统一请求的兼容包装；失败一律收敛成 null。 */
 async function requestJson(
     cfg: KbServiceConfig,
     path: string,
     init: RequestInit,
     fetchImpl: FetchLike,
 ): Promise<unknown> {
-    if (!cfg?.baseUrl || !cfg.token) return null;
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutOf(cfg));
-    try {
-        const res = await fetchImpl(endpoint(cfg.baseUrl, path), { ...init, signal: controller.signal });
-        if (!res.ok) return null;
-        return (await res.json()) as unknown;
-    } catch {
-        return null;
-    } finally {
-        clearTimeout(timer);
+    const outcome = await requestJsonOutcome(cfg, path, init, fetchImpl);
+    return outcome.ok ? outcome.data : null;
+}
+
+/**
+ * 问一次知识库服务，并保留失败类型。
+ * - 未配置 baseUrl/token：response/failure 都为空（不发起请求，也不触发降级）；
+ * - 超时 / 5xx / 连接失败 / 响应形状错误：failure 非空；
+ * - 200 且 reply 是字符串（含空串）：response 非空。
+ */
+export async function askServiceOutcome(
+    cfg: KbServiceConfig,
+    req: AskRequest,
+    fetchImpl: FetchLike = fetch,
+): Promise<AskOutcome> {
+    if (!cfg?.baseUrl || !cfg.token) return { response: null, failure: null };
+
+    const body: Record<string, unknown> = { text: req.text, userId: req.userId, trigger: req.trigger };
+    if (req.groupId) body.groupId = req.groupId;
+    if (req.collected && req.collected.length > 0) body.collected = req.collected;
+
+    const outcome = await requestJsonOutcome(
+        cfg,
+        '/answer',
+        {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', 'x-bot-token': String(cfg.token || '') },
+            body: JSON.stringify(body),
+        },
+        fetchImpl,
+    );
+    if (!outcome.ok) return { response: null, failure: outcome.failure };
+    const data = outcome.data;
+    if (!isObject(data) || typeof data.reply !== 'string') {
+        return { response: null, failure: { kind: 'err' } };
     }
+    return {
+        response: {
+            reply: data.reply,
+            action: typeof data.action === 'string' ? data.action : 'unknown',
+            score: typeof data.score === 'number' ? data.score : undefined,
+        },
+        failure: null,
+    };
 }
 
 /**
@@ -82,26 +164,7 @@ export async function askService(
     req: AskRequest,
     fetchImpl: FetchLike = fetch,
 ): Promise<AskResponse | null> {
-    const body: Record<string, unknown> = { text: req.text, userId: req.userId, trigger: req.trigger };
-    if (req.groupId) body.groupId = req.groupId;
-    if (req.collected && req.collected.length > 0) body.collected = req.collected;
-
-    const data = await requestJson(
-        cfg,
-        '/answer',
-        {
-            method: 'POST',
-            headers: { 'content-type': 'application/json', 'x-bot-token': String(cfg.token || '') },
-            body: JSON.stringify(body),
-        },
-        fetchImpl,
-    );
-    if (!isObject(data) || typeof data.reply !== 'string') return null;
-    return {
-        reply: data.reply,
-        action: typeof data.action === 'string' ? data.action : 'unknown',
-        score: typeof data.score === 'number' ? data.score : undefined,
-    };
+    return (await askServiceOutcome(cfg, req, fetchImpl)).response;
 }
 
 /**
@@ -162,4 +225,36 @@ export async function fetchBlocklist(
         users.push(entry);
     }
     return users;
+}
+
+/**
+ * 拉取服务侧群守卫词表（GET /blocklist 的 words 字段）。
+ * - 请求失败返回 null，调用方保留上一次缓存；
+ * - 老版本服务只返回 users、没有 words：按成功且无服务词处理，避免滚动升级期间刷失败日志；
+ * - 成功返回去重后的非空字符串数组（可能为空）。
+ */
+export async function fetchGuardWords(
+    cfg: KbServiceConfig,
+    fetchImpl: FetchLike = fetch,
+): Promise<string[] | null> {
+    const data = await requestJson(
+        cfg,
+        '/blocklist',
+        { method: 'GET', headers: { 'x-bot-token': String(cfg.token || '') } },
+        fetchImpl,
+    );
+    if (!isObject(data)) return null;
+    if (!Array.isArray(data.words)) {
+        return Array.isArray(data.users) ? [] : null;
+    }
+    const seen = new Set<string>();
+    const words: string[] = [];
+    for (const item of data.words) {
+        if (typeof item !== 'string') continue;
+        const word = item.trim();
+        if (!word || seen.has(word)) continue;
+        seen.add(word);
+        words.push(word);
+    }
+    return words;
 }
