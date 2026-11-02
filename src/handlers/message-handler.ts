@@ -6,9 +6,8 @@ import type { OB11Message } from 'napcat-types/napcat-onebot';
 import type { NapCatPluginContext } from 'napcat-types/napcat-onebot/network/plugin/types';
 import { pluginState } from '../core/state';
 import { isBlocked } from '../core/blocklist';
-import { pickReply, planReply, resolveSend, type Plan } from '../core/escalation';
-import { resolveGroupFallback } from '../core/policy';
-import { resolveEffectiveGroupPolicy } from '../core/group-config';
+import { pickReply, planReply, resolveSend, type Plan, type SendDecision } from '../core/escalation';
+import { resolveEffectiveGroupCooldown, resolveEffectiveGroupFallback, resolveEffectiveGroupPolicy } from '../core/group-config';
 import { hitLog } from '../core/hit-log';
 import { recordKeywordHit } from '../core/keyword-stats';
 import { appendHandoffRecord } from '../core/handoff';
@@ -81,28 +80,60 @@ export async function handleMessage(ctx: NapCatPluginContext, event: OB11Message
     // ctx.pluginManager.config 里不保证有 self_id（历史 bug：取不到导致 atBot 恒为 false，群 @ 被静默）。
     const selfId = String(event.self_id || pluginState.selfId || ctx.pluginManager.config?.self_id || '');
 
+    const groupId = kind === 'group' ? String(event.group_id ?? '') : undefined;
+    const atBot = kind === 'group' ? isDirectedAtBot(event, selfId) : false;
+
+    /**
+     * 统一记录「本条不回复」：命中日志页只放英文原因码，中文说明同时写进运行日志。
+     * 群内 @ 消息用 info（排障必看），非 @ 群消息与私聊用 debug（量大）。
+     */
+    const recordSkip = (code: string, zh: string, detail = ''): void => {
+        const where = kind === 'group' ? ' group=' + groupId : ' user=' + senderId;
+        const line = '[丢弃] ' + (kind === 'group' ? '群聊' : '私聊') + where +
+            ' reason=' + code + (detail ? ' ' + detail : '') + '（' + zh + '）';
+        if (kind === 'group' && !atBot) pluginState.logger.debug(line);
+        else pluginState.logger.info(line);
+        hitLog.add({
+            ts: new Date().toISOString(),
+            channel: kind,
+            groupId,
+            userId: senderId,
+            result: 'silent',
+            detail: code + ' ' + zh + (detail ? ' ' + detail : ''),
+        });
+    };
+
     // 不回复自己
-    if (senderId === selfId || senderId === '0') return;
+    if (senderId === selfId || senderId === '0') {
+        recordSkip('self_message', '发送者是机器人自己');
+        return;
+    }
 
     // 忽略发送者：两个机器人同群时填彼此的号，命中直接丢弃（不记冷却、不回复）
     const ignoreSenders = (config.ignoreSenders ?? []).map(String);
     if (ignoreSenders.includes(senderId)) {
-        pluginState.logger.info('[丢弃] reason=ignore_sender user=' + senderId + (event.group_id ? ' group=' + event.group_id : ''));
+        recordSkip('ignore_sender', '发送者在忽略名单');
         return;
     }
 
     // 黑名单:名单内用户直接跳过,不触发任何回复
     const blacklist = (config.blacklist ?? []).map(String);
-    if (blacklist.includes(senderId)) return;
+    if (blacklist.includes(senderId)) {
+        recordSkip('blacklist', '发送者在黑名单');
+        return;
+    }
 
     // ① 服务侧拉黑缓存:命中后任何回复都不发(含兜底与 AI)
-    if (isBlocked(senderId, config.blocklist?.users)) return;
+    if (isBlocked(senderId, config.blocklist?.users)) {
+        recordSkip('service_blocked', '服务侧拉黑命中');
+        return;
+    }
 
     if (!text) return;
 
     // 自回声保护：与本目标 60 秒内最后一条已发回复完全相同 → 丢弃，防被自己/对方复制触发
     if (getLoopGuard().isSelfEcho(replyKey(event), text)) {
-        pluginState.logger.info('[丢弃] reason=self_echo user=' + senderId + (event.group_id ? ' group=' + event.group_id : '') + ' text=' + text.slice(0, 40));
+        recordSkip('self_echo', '与本目标最近一条回复相同', 'text=' + text.slice(0, 40));
         return;
     }
 
@@ -119,79 +150,114 @@ export async function handleMessage(ctx: NapCatPluginContext, event: OB11Message
         return;
     }
 
-    // 群聊：只有 groupRules 里配置过的群才处理，未配置群一律静默（含 @）
+    // 群聊：只有已配置的群才处理（服务端条目或本地 groupRules），未配置群一律静默（含 @）
     if (kind === 'group') {
-        const groupId = String(event.group_id ?? '');
-        const atBot = isDirectedAtBot(event, selfId);
-        // 每个提前返回都留原因码：@ 消息用 info（排障必看），非 @ 用 debug（群消息量大）
-        const skip = (reason: string, detail = '') => {
-            const line = '[群聊] 跳过 group=' + groupId + ' reason=' + reason + (detail ? ' ' + detail : '');
-            if (atBot) pluginState.logger.info(line);
-            else pluginState.logger.debug(line);
-            hitLog.add({
-                ts: new Date().toISOString(),
-                channel: 'group',
-                groupId,
-                userId: senderId,
-                result: 'silent',
-                detail: reason + (detail ? ' ' + detail : ''),
-            });
-        };
-        if (!config.group.enabled) { skip('群聊总开关关闭'); return; }
-        if (!checkWhitelist(config.group.whitelist, groupId)) { skip('群白名单外'); return; }
+        if (!config.group.enabled) { recordSkip('group_disabled', '群聊总开关关闭'); return; }
+        if (!checkWhitelist(config.group.whitelist, groupId ?? '')) {
+            recordSkip('group_not_whitelisted', '群不在白名单内');
+            return;
+        }
         // 生效口径：服务端有条目以服务端为准，否则回落本地 groupRules；都没有则不处理
-        const policy = resolveEffectiveGroupPolicy(config, groupId);
-        if (!policy) { skip('未配置群'); return; }
-        const groupRule = config.groupRules?.[groupId];
-        if (!policy.enabled.value) { skip('群已禁用'); return; }
+        const policy = resolveEffectiveGroupPolicy(config, groupId ?? '');
+        if (!policy) { recordSkip('unconfigured', '群不在 groupRules 且服务端无条目'); return; }
+        const mode = policy.mode.value;
+        const missPolicy = policy.missPolicy.value;
+        if (mode === 'off') { recordSkip('mode_off', '群模式=关闭，一律不回'); return; }
         // 追问中的用户消息优先作为答案消费；不要求 @，否则群内无法回答
-        if (await consumeCollectAnswer(ctx, event, collectKey('group', senderId, groupId), senderId, groupId, text, 'group')) return;
-        if (policy.atOnly.value && !atBot) { skip('未@且该群仅@触发', 'selfId=' + (selfId || '-')); return; }
+        if (await consumeCollectAnswer(ctx, event, collectKey('group', senderId, groupId ?? ''), senderId, groupId, text, 'group')) return;
+        if (mode === 'at' && !atBot) {
+            recordSkip('not_at', '群模式=仅@，本条未 @');
+            return;
+        }
+        const groupRule = config.groupRules?.[groupId ?? ''];
         // 群专属关键词非空时只按群规则匹配,避免全局规则串群
-        const keywords = groupRule.keywords?.length ? groupRule.keywords : config.keywords;
+        const keywords = groupRule?.keywords?.length ? groupRule.keywords : config.keywords;
         const hit = matchKeywords(keywords, text);
         if (hit) recordKeywordHit(hit);
-        const plan = planReply({
-            kind: 'group',
-            userId: senderId,
-            atBot,
-            rule: hit,
-            blockUsers: config.blocklist?.users,
-            kbEnabled: config.kbService?.enabled === true,
-            // 群内未 @ 且未命中关键词必须静默：未命中时不允许升级 AI，只有 @ 才走 FAQ/AI
-            aiTrigger: { private: config.aiTrigger.private, groupAtOnly: true },
-            groupAiEnabled: policy.aiEnabled.value,
-        });
-        if (plan.kind === 'blocked') { skip('服务侧拉黑'); return; }
-        if (isRuleCooldown(senderId, plan)) { skip('规则冷却', 'rule=' + plan.rule.match); return; }
-        // 多账号同群去重:规则回复与 AI 回复都只允许一个实例发
-        if (!tryClaimReply(String(event.message_id ?? ''), groupId)) { skip('去重命中'); return; }
-        const ask = needsAsk(plan) ? await askKnowledge(text, senderId, groupId, 'group_at') : null;
-        if (ask?.failure) {
-            // 只对已定向（@/引用机器人）的群消息回降级提示；未定向保持原规则/静默逻辑
+        // mode=all 下默认非 @ 消息命中关键词也回；显式关闭时即便命中也不回
+        if (hit && mode === 'all' && !atBot && !policy.keywordOutsideAt.value) {
+            recordSkip('keyword_outside_at_off', '非@消息命中关键词，但「非@命中关键词也回」已关闭', 'rule=' + hit.match);
+            return;
+        }
+        // 群内 AI 能力跟随未命中策略：只有 ai_then_fallback 才允许问服务（含规则 aiFallback）
+        const aiAllowed = missPolicy === 'ai_then_fallback';
+        const plan = hit
+            ? planReply({
+                kind: 'group',
+                userId: senderId,
+                atBot,
+                rule: hit,
+                blockUsers: config.blocklist?.users,
+                kbEnabled: config.kbService?.enabled === true,
+                aiTrigger: { private: config.aiTrigger.private, groupAtOnly: true },
+                groupAiEnabled: aiAllowed,
+            })
+            : null;
+        if (plan?.kind === 'blocked') { recordSkip('service_blocked', '服务侧拉黑命中'); return; }
+        const cooldownSeconds = resolveEffectiveGroupCooldown(config, groupId ?? '');
+        if (plan && isRuleCooldown(senderId, plan, cooldownSeconds)) {
+            recordSkip('cooldown', '同一用户命中同一规则仍在冷却期', 'rule=' + plan.rule.match);
+            return;
+        }
+        // 多账号同群去重:规则回复与 AI/兜底回复都只允许一个实例发
+        if (!tryClaimReply(String(event.message_id ?? ''), groupId ?? '')) {
+            recordSkip('dedup', '多实例去重命中');
+            return;
+        }
+        // 命中规则且需要问服务，或未命中且策略要求先问 AI：都走一次 /answer
+        const needsService = plan ? needsAsk(plan) : aiAllowed;
+        const ask = needsService ? await askKnowledge(text, senderId, groupId, 'group_at') : null;
+        if (plan && ask?.failure) {
+            // 规则路径保持原行为：只对已定向（@/引用机器人）的群消息回降级提示
             if (atBot) {
                 respondServiceDown(ctx, event, senderId, ask.failure, groupId);
                 return;
             }
             pluginState.logger.debug('[知识库] 群内未定向，服务失败不降级 group=' + groupId + ' user=' + senderId);
         }
-        if (plan.kind === 'rule-human') {
-            if (startCollect(ctx, event, senderId, groupId, text, plan.rule.match, 'group')) return;
+        if (!plan && ask?.failure) {
+            // 未命中路径：失败按未命中策略回兜底，不再发服务降级提示
+            pluginState.logger.warn(
+                '[知识库] reason=service_down status=' + ask.failure.kind +
+                (ask.failure.status !== undefined ? ' code=' + ask.failure.status : '') +
+                ' → 回群兜底 group=' + groupId + ' user=' + senderId,
+            );
+        }
+        if (plan?.kind === 'rule-human') {
+            if (startCollect(ctx, event, senderId, groupId ?? '', text, plan.rule.match, 'group')) return;
             recordHandoff({ userId: senderId, groupId, text, rule: plan.rule.match, kind: 'group' });
             reportHandoff({ userId: senderId, groupId, text });
         }
-        const fallback = resolveGroupFallback(config, groupId);
-        const out = resolveSend({
-            plan,
-            ask: ask?.reply ? { reply: ask.reply } : null,
-            kind: 'group',
-            atBot,
-            groupFallback: fallback.groupAtText,
-        });
+        const fallbackText = resolveEffectiveGroupFallback(config, groupId ?? '');
+        let out: SendDecision;
+        if (plan) {
+            out = resolveSend({
+                plan,
+                ask: ask?.reply ? { reply: ask.reply } : null,
+                kind: 'group',
+                // 能走到这里说明本条已被群模式放行，兜底不受「是否 @」限制
+                atBot: true,
+                groupFallback: fallbackText,
+            });
+        } else if (missPolicy === 'none') {
+            // 不回复；仅 at 模式下被 @ 且 atForceReply 仍回兜底（老板要的「至少回复兜底」）
+            if (mode === 'at' && atBot && policy.atForceReply.value) {
+                out = fallbackText
+                    ? { send: true, text: fallbackText, source: 'default' }
+                    : { send: false, source: 'none' };
+            } else {
+                recordSkip('miss_policy_none', '未命中关键词且未命中策略=不回复');
+                return;
+            }
+        } else {
+            const aiText = ask?.reply?.trim() ?? '';
+            if (aiText) out = { send: true, text: aiText, source: 'ai' };
+            else if (fallbackText) out = { send: true, text: fallbackText, source: 'default' };
+            else out = { send: false, source: 'none' };
+        }
         if (!out.send || (!out.text && !out.image)) {
-            const reason = plan.kind === 'none' && !atBot ? '未@且未命中规则(静默)' : '无可发送内容';
-            skip(reason, 'kind=' + plan.kind + ' atBot=' + atBot + ' selfId=' + (selfId || '-') +
-                ' 兜底=' + (fallback.groupAtText ? '有' : '空'));
+            recordSkip('no_content', '无可发送内容', 'plan=' + (plan?.kind ?? 'none') + ' mode=' + mode +
+                ' 兜底=' + (fallbackText ? '有' : '空'));
             return;
         }
         hitLog.add({
@@ -200,9 +266,11 @@ export async function handleMessage(ctx: NapCatPluginContext, event: OB11Message
             groupId,
             userId: senderId,
             result: 'answered',
-            detail: (out.text || (out.image ? '[图片]' : '')).slice(0, 80) + ' source=' + out.source,
+            detail: (out.text || (out.image ? '[图片]' : '')).slice(0, 80) +
+                ' source=' + out.source + ' mode=' + mode + ' miss=' + missPolicy,
         });
         scheduleReply(ctx, event, { text: out.text || '', image: out.image }, '[群聊] ' + groupId + sourceTag(out.source));
+        return;
     }
 }
 
@@ -288,7 +356,7 @@ async function processPrivateMessage(ctx: NapCatPluginContext, event: OB11Messag
         groupAiEnabled: true,
     });
     // 规则命中(含 aiFallback/action)沿用原冷却粒度,冷却期内整条不发
-    if (isRuleCooldown(senderId, plan)) return;
+    if (isRuleCooldown(senderId, plan, pluginState.config.cooldownSeconds ?? 0)) return;
     const ask = needsAsk(plan) ? await askKnowledge(text, senderId, undefined, 'private') : null;
     if (ask?.failure) {
         respondServiceDown(ctx, event, senderId, ask.failure);
@@ -325,10 +393,10 @@ async function processPrivateMessage(ctx: NapCatPluginContext, event: OB11Messag
     scheduleReply(ctx, event, { text: out.text || '', image: out.image }, '[私聊] ' + senderId + sourceTag(out.source));
 }
 
-/** 规则类计划共用的冷却键；AI/兜底不占用规则冷却 */
-function isRuleCooldown(senderId: string, plan: Plan): boolean {
+/** 规则类计划共用的冷却键；AI/兜底不占用规则冷却。seconds 由调用方按群级/全局口径传入 */
+function isRuleCooldown(senderId: string, plan: Plan, seconds: number): boolean {
     if (plan.kind === 'rule' || plan.kind === 'rule-ai' || plan.kind === 'rule-ai-only' || plan.kind === 'rule-human') {
-        return isOnCooldown(senderId, plan.rule.match);
+        return isOnCooldown(senderId, plan.rule.match, seconds);
     }
     return false;
 }
@@ -409,10 +477,10 @@ function finalizeCollect(
     clearCollect(pluginState.collectSessions, session);
     // 群里被移出白名单/关闭后不再补发，避免配置变更后继续发消息
     const groupActive = kind !== 'group' ||
-        (resolveEffectiveGroupPolicy(pluginState.config, session.groupId ?? '')?.enabled.value ?? false);
+        (resolveEffectiveGroupPolicy(pluginState.config, session.groupId ?? '')?.mode.value ?? 'off') !== 'off';
     const fallback = kind === 'private'
         ? pluginState.config.fallback?.privateText ?? ''
-        : resolveGroupFallback(pluginState.config, session.groupId ?? '').groupAtText;
+        : resolveEffectiveGroupFallback(pluginState.config, session.groupId ?? '');
     recordHandoff({
         userId: session.userId,
         groupId: session.groupId,
@@ -621,10 +689,9 @@ function matchKeywords(keywords: KeywordRule[], text: string): KeywordRule | nul
     return null;
 }
 
-/** 同一用户+同一规则的冷却检查;未冷却时记录本次命中时间 */
-function isOnCooldown(senderId: string, ruleKey: string): boolean {
-    const seconds = pluginState.config.cooldownSeconds ?? 0;
-    if (seconds <= 0) return false;
+/** 同一用户+同一规则的冷却检查;未冷却时记录本次命中时间。seconds<=0 表示关闭 */
+function isOnCooldown(senderId: string, ruleKey: string, seconds: number): boolean {
+    if (!Number.isFinite(seconds) || seconds <= 0) return false;
     const now = Date.now();
     const map = pluginState.replyCooldowns;
     // 顺带清理过期条目,防止长期运行时 Map 无限增长

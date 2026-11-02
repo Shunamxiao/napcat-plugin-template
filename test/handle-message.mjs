@@ -3,7 +3,7 @@
  *
  * 用构建产物里的 handleMessage + pluginState，模拟 OneBot 事件，验证：
  *   1) 私聊未命中怪问题 → 回私聊兜底
- *   2) 群内未 @ 同一问题 → 无任何回复
+ *   2) 群内未 @ 同一问题 → mode=all + ai_then_fallback 按策略回兜底
  *   3) 群内 @ 同一问题 → 回群兜底
  *   4) 转人工追问：按题收集后回兜底，并写 collected
  *
@@ -114,12 +114,13 @@ assert.equal(outbox.length, before + 1, "私聊应回复");
 assert.equal(textOf(outbox[outbox.length - 1]), "私聊兜底话术");
 console.log("ok 1 - 私聊未命中回兜底");
 
-// 2) 群内未 @ 未命中 → 静默
+// 2) 群内未 @ 未命中：mode=all + ai_then_fallback，AI 未启用时回兜底
 before = outbox.length;
 await handleMessage(ctx, groupEvent(QUESTION, false));
 await wait();
-assert.equal(outbox.length, before, "群内未 @ 不应回复");
-console.log("ok 2 - 群内未 @ 未命中静默");
+assert.equal(outbox.length, before + 1, "mode=all 未 @ 未命中应回兜底");
+assert.equal(textOf(outbox[outbox.length - 1]), "群@兜底话术");
+console.log("ok 2 - 群内未 @ 未命中按未命中策略回兜底");
 
 // 3) 群内 @ 未命中 → 群兜底
 before = outbox.length;
@@ -304,7 +305,7 @@ assert.ok(calls[0].url.endsWith("/answer"));
 assert.equal(JSON.parse(calls[0].init.body).trigger, "group_at");
 console.log("ok 8 - 真机 @ 消息（无 self_id 环境）回群兜底");
 
-// 9) 未 @ 未命中 → 静默（不问服务、不发消息）
+// 9) 未 @ 未命中：mode=all 且 ai_then_fallback → 先问服务，无答案回兜底
 calls.length = 0;
 before = outbox.length;
 await handleMessage(ctx, realEvent({
@@ -313,9 +314,11 @@ await handleMessage(ctx, realEvent({
   message_id: RUN + "-real-1816586551",
 }));
 await wait(100);
-assert.equal(outbox.length, before, "未 @ 未命中应静默");
-assert.equal(calls.length, 0, "未 @ 未命中不应问服务");
-console.log("ok 9 - 未 @ 未命中静默");
+assert.equal(calls.length, 1, "mode=all 未命中应问一次服务");
+assert.ok(calls[0].url.endsWith("/answer"));
+assert.equal(outbox.length, before + 1, "AI 无答案时回兜底");
+assert.equal(textOf(outbox[outbox.length - 1]), "群@兜底话术");
+console.log("ok 9 - 未 @ 未命中问服务后回兜底");
 
 // 10) 未配置群 @ → 静默
 before = outbox.length;

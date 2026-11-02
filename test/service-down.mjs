@@ -6,7 +6,7 @@
  *   2) 同一用户 10 分钟内第二次失败 → 不再回任何消息
  *   3) FAQ 正常路径不受影响
  *   4) 5xx / 连接失败 → status=http / err
- *   5) 群内已定向（@机器人）失败 → 群里回降级提示
+ *   5) 群内已定向（@机器人）未命中失败 → 按未命中策略回群兜底（不再发降级提示）
  *
  * 用法：node test/service-down.mjs（先 pnpm build）
  */
@@ -174,17 +174,17 @@ assert.equal(outbox.length, before + 1, "连接失败应回降级提示");
 assert.ok(logs.some((l) => l.includes("reason=service_down") && l.includes("status=err")), "连接失败应记录 status=err");
 console.log("ok 4 - 5xx / 连接失败分别降级");
 
-// 5) 群内已定向失败 → 群里回降级提示
+// 5) 群内已定向失败 → 未命中策略 ai_then_fallback 回群兜底
 globalThis.fetch = timeoutFetch;
 before = outbox.length;
 logs.length = 0;
 await handleMessage(ctx, groupEvent("群里的问题", USER_E));
 await wait(700);
-assert.equal(outbox.length, before + 1, "群内 @ 机器人失败应回一次降级提示");
-assert.equal(textOf(outbox[outbox.length - 1]), SERVICE_DOWN_REPLY, "群里也应发送固定降级文案");
-assert.equal(outbox[outbox.length - 1].group_id, GID, "降级回复应发到原群");
-assert.ok(logs.some((l) => l.includes("reason=service_down") && l.includes("status=timeout") && l.includes("group=" + GID)), "群降级应记录 group");
-console.log("ok 5 - 群内定向失败降级到群");
+assert.equal(outbox.length, before + 1, "群内 @ 机器人失败应回一次兜底");
+assert.equal(textOf(outbox[outbox.length - 1]), "普通群兜底", "未命中失败应按策略回群兜底");
+assert.equal(outbox[outbox.length - 1].group_id, GID, "兜底回复应发到原群");
+assert.ok(logs.some((l) => l.includes("reason=service_down") && l.includes("status=timeout") && l.includes("group=" + GID)), "群失败应记录 service_down");
+console.log("ok 5 - 群内定向未命中失败回群兜底");
 
 globalThis.fetch = originalFetch;
 fs.rmSync(dir, { recursive: true, force: true });

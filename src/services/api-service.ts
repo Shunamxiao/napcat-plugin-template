@@ -24,7 +24,7 @@ import type {
 import { timingSafeEqual } from 'crypto';
 import { maskConfig, pluginState } from '../core/state';
 import { startGuardWordsSync } from '../core/guard-words';
-import { startGroupConfigSync, buildEffectiveGroupPolicies, getGroupConfigStatus, getServerGroup, getServerGroupConfigs, getServerGuardPolicy, resolveEffectiveGroupPolicy, resolveGroupWelcome, resolveGuardPolicy, applyServerGroupEntry, applyServerGuardPolicy } from '../core/group-config';
+import { startGroupConfigSync, buildEffectiveGroupPolicies, getGroupConfigStatus, getServerGroup, getServerGroupConfigs, getServerGuardPolicy, resolveEffectiveGroupFallback, resolveEffectiveGroupPolicy, resolveGroupWelcome, resolveGuardPolicy, applyServerGroupEntry, applyServerGuardPolicy } from '../core/group-config';
 import { hitLog } from '../core/hit-log';
 import { resetKeywordStats, snapshotKeywordStats } from '../core/keyword-stats';
 import { putServerGroup, putServerGuardPolicy, type GroupPatch } from './admin-client';
@@ -163,12 +163,22 @@ export function registerApiRoutes(ctx: NapCatPluginContext): void {
         const server = getServerGroup(groupId);
         const policy = resolveEffectiveGroupPolicy(pluginState.config, groupId);
         const welcome = resolveGroupWelcome(pluginState.config, groupId);
+        const mode = policy?.mode.value ?? 'off';
+        const missPolicy = policy?.missPolicy.value ?? 'fallback_only';
         return {
             groupId,
             name,
-            enabled: policy?.enabled.value ?? false,
-            atOnly: policy?.atOnly.value ?? pluginState.config.atOnly === true,
-            aiEnabled: policy?.aiEnabled.value ?? false,
+            mode,
+            missPolicy,
+            atForceReply: policy?.atForceReply.value ?? true,
+            keywordOutsideAt: policy?.keywordOutsideAt.value ?? true,
+            // 群级覆盖原样回显（null = 跟随全局），避免把全局值误存回服务端
+            cooldownSeconds: server?.cooldownSeconds ?? null,
+            fallbackText: server?.fallbackText ?? null,
+            // 旧字段继续下发，老页面/其他调用方仍可用
+            enabled: mode !== 'off',
+            atOnly: mode === 'at',
+            aiEnabled: missPolicy === 'ai_then_fallback',
             welcomeEnabled: welcome.enabled,
             // 服务端条目回显它自己的模板（空 = 跟随全局），避免把全局文案误存回服务端
             welcomeTemplate: server ? server.welcomeTemplate : (welcome.template || null),
@@ -177,8 +187,13 @@ export function registerApiRoutes(ctx: NapCatPluginContext): void {
     }
 
     const GROUP_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
-    const GROUP_BOOL_FIELDS = ['enabled', 'atOnly', 'aiEnabled', 'welcomeEnabled'] as const;
-    const GROUP_FIELDS = new Set<string>([...GROUP_BOOL_FIELDS, 'welcomeTemplate']);
+    const GROUP_MODES = new Set(['off', 'all', 'at']);
+    const MISS_POLICIES = new Set(['ai_then_fallback', 'fallback_only', 'none']);
+    const GROUP_BOOL_FIELDS = ['enabled', 'atOnly', 'aiEnabled', 'welcomeEnabled', 'atForceReply', 'keywordOutsideAt'] as const;
+    const GROUP_FIELDS = new Set<string>([...GROUP_BOOL_FIELDS, 'welcomeTemplate', 'mode', 'missPolicy', 'cooldownSeconds', 'fallbackText']);
+    const COOLDOWN_SECONDS_MIN = 0;
+    const COOLDOWN_SECONDS_MAX = 3600;
+    const MAX_FALLBACK_TEXT = 500;
     const GUARD_INT_LIMITS = {
         threshold: { min: 1, max: 20 },
         windowSeconds: { min: 60, max: 86400 },
@@ -200,6 +215,30 @@ export function registerApiRoutes(ctx: NapCatPluginContext): void {
             if (typeof raw[key] !== 'boolean') return { ok: false, error: key + ' 必须是布尔值' };
             patch[key] = raw[key] as boolean;
         }
+        if ('mode' in raw) {
+            if (typeof raw.mode !== 'string' || !GROUP_MODES.has(raw.mode)) {
+                return { ok: false, error: 'mode 必须是 off/all/at 之一' };
+            }
+            patch.mode = raw.mode as import('../types').GroupMode;
+        }
+        if ('missPolicy' in raw) {
+            if (typeof raw.missPolicy !== 'string' || !MISS_POLICIES.has(raw.missPolicy)) {
+                return { ok: false, error: 'missPolicy 必须是 ai_then_fallback/fallback_only/none 之一' };
+            }
+            patch.missPolicy = raw.missPolicy as import('../types').MissPolicy;
+        }
+        if ('cooldownSeconds' in raw) {
+            const value = raw.cooldownSeconds;
+            if (value === null) {
+                patch.cooldownSeconds = null;
+            } else if (typeof value !== 'number' || !Number.isInteger(value)) {
+                return { ok: false, error: 'cooldownSeconds 必须是整数或 null' };
+            } else if (value < COOLDOWN_SECONDS_MIN || value > COOLDOWN_SECONDS_MAX) {
+                return { ok: false, error: 'cooldownSeconds 必须在 ' + COOLDOWN_SECONDS_MIN + '..' + COOLDOWN_SECONDS_MAX + ' 之间' };
+            } else {
+                patch.cooldownSeconds = value;
+            }
+        }
         if ('welcomeTemplate' in raw) {
             const value = raw.welcomeTemplate;
             if (value === null) {
@@ -212,6 +251,20 @@ export function registerApiRoutes(ctx: NapCatPluginContext): void {
                 patch.welcomeTemplate = template || null;
             } else {
                 return { ok: false, error: 'welcomeTemplate 必须是字符串或 null' };
+            }
+        }
+        if ('fallbackText' in raw) {
+            const value = raw.fallbackText;
+            if (value === null) {
+                patch.fallbackText = null;
+            } else if (typeof value === 'string') {
+                const text = value.trim();
+                if ([...text].length > MAX_FALLBACK_TEXT) {
+                    return { ok: false, error: '兜底文案最多 ' + MAX_FALLBACK_TEXT + ' 字' };
+                }
+                patch.fallbackText = text || null;
+            } else {
+                return { ok: false, error: 'fallbackText 必须是字符串或 null' };
             }
         }
         if (Object.keys(patch).length === 0) return { ok: false, error: '至少提交一个字段' };
@@ -267,7 +320,17 @@ export function registerApiRoutes(ctx: NapCatPluginContext): void {
             if (!groups.has(groupId)) groups.set(groupId, '');
         }
         const entries = Array.from(groups.entries()).map(([groupId, name]) => toGroupEntry(groupId, name));
-        res.json({ code: 0, data: { groups: entries } });
+        res.json({
+            code: 0,
+            data: {
+                groups: entries,
+                // 页面里「留空 = 跟随全局」要展示当前全局值
+                global: {
+                    cooldownSeconds: pluginState.config.cooldownSeconds ?? 0,
+                    fallbackText: resolveEffectiveGroupFallback(pluginState.config, ''),
+                },
+            },
+        });
     });
 
     /** 写单个群的服务端配置：PUT /admin/groups/:groupId（Basic 凭据来自环境） */

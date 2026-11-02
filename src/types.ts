@@ -5,6 +5,12 @@
 /** 规则命中后的动作 */
 export type RuleAction = "reply" | "ai" | "human";
 
+/** 群回复模式：off 一律不回（含 @）；all 响应所有消息；at 仅被 @ 时响应 */
+export type GroupMode = "off" | "all" | "at";
+
+/** 未命中关键词时的策略：先问 AI 再兜底 / 直接兜底 / 不回复 */
+export type MissPolicy = "ai_then_fallback" | "fallback_only" | "none";
+
 /** 单条关键词规则 */
 export interface KeywordRule {
     /** 匹配文本 */
@@ -168,19 +174,36 @@ export interface LoopGuardConfig {
     pauseSeconds: number;
 }
 
-/** 服务端群配置（GET /config/groups 的一条；服务端是群规则真源） */
+/**
+ * 服务端群配置（GET /config/groups 的一条；服务端是群规则真源）
+ *
+ * enabled/atOnly/aiEnabled 是旧字段，老服务端仍会下发；新服务端由 mode/missPolicy 反推。
+ * mode/missPolicy 等新字段在解析时会补全；PUT 返回老服务端条目时可能缺省，读取侧按旧字段兜底。
+ */
 export interface ServerGroupConfig {
     groupId: string;
-    /** 该群是否启用自动回复 */
+    /** 该群是否启用自动回复（旧字段，= mode !== 'off'） */
     enabled: boolean;
-    /** 是否仅 @ 时回复 */
+    /** 是否仅 @ 时回复（旧字段，= mode === 'at'） */
     atOnly: boolean;
-    /** 是否允许升级 AI */
+    /** 是否允许升级 AI（旧字段，= missPolicy === 'ai_then_fallback'） */
     aiEnabled: boolean;
     /** 是否启用入群欢迎 */
     welcomeEnabled: boolean;
     /** 入群欢迎模板；空/null 时回落到 groupWelcome.template */
     welcomeTemplate: string | null;
+    /** 群回复模式；缺省时由 enabled/atOnly 推导 */
+    mode?: GroupMode;
+    /** 未命中策略；缺省时由 aiEnabled 推导 */
+    missPolicy?: MissPolicy;
+    /** 仅 mode=at 有意义：被 @ 且未命中、missPolicy=none 时仍回兜底（默认 true） */
+    atForceReply?: boolean;
+    /** 仅 mode=all 有意义：非 @ 命中关键词也回（默认 true） */
+    keywordOutsideAt?: boolean;
+    /** 群级冷却秒数；null/缺省 = 跟随全局 */
+    cooldownSeconds?: number | null;
+    /** 群级兜底文案；null/缺省 = 跟随全局 */
+    fallbackText?: string | null;
 }
 
 /** 服务端守卫处罚策略（屏蔽词命中 N 次 → 禁言） */

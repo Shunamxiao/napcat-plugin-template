@@ -2,12 +2,13 @@
  * 群级生效口径解析（纯函数）
  *
  * 规则：
- * - 只有出现在 groupRules 里的群才处理；未配置的群一律静默。
- * - enabled/atOnly/aiEnabled 逐个字段：群级显式值优先，否则回落全局。
+ * - 只有出现在 groupRules 里的群才处理（服务端有条目时由 group-config 负责）。
+ * - 新口径是 { mode, missPolicy, atForceReply, keywordOutsideAt } 四项；本地老配置
+ *   （enabled / atOnly / aiEnabled）按固定规则映射，服务端条目优先。
  * - 兜底话术同样按字段覆盖，null/缺省跟随全局。
  */
 
-import type { FallbackConfig, GroupRule, PluginConfig } from '../types';
+import type { FallbackConfig, GroupMode, GroupRule, MissPolicy, PluginConfig } from '../types';
 
 export type PolicySource = 'group' | 'global' | 'server';
 
@@ -17,9 +18,26 @@ export interface PolicyValue<T> {
 }
 
 export interface GroupPolicy {
-    enabled: PolicyValue<boolean>;
-    atOnly: PolicyValue<boolean>;
-    aiEnabled: PolicyValue<boolean>;
+    mode: PolicyValue<GroupMode>;
+    missPolicy: PolicyValue<MissPolicy>;
+    /** 仅 mode=at 有意义：被 @ 且未命中、missPolicy=none 时仍回兜底（默认 true） */
+    atForceReply: PolicyValue<boolean>;
+    /** 仅 mode=all 有意义：非 @ 消息命中关键词也回（默认 true） */
+    keywordOutsideAt: PolicyValue<boolean>;
+}
+
+export const DEFAULT_AT_FORCE_REPLY = true;
+export const DEFAULT_KEYWORD_OUTSIDE_AT = true;
+
+/** 老配置 enabled/atOnly → 新枚举（服务端迁移与插件本地映射共用同一口径） */
+export function legacyGroupMode(enabled: boolean, atOnly: boolean): GroupMode {
+    if (!enabled) return 'off';
+    return atOnly ? 'at' : 'all';
+}
+
+/** 老配置 aiEnabled → 未命中策略 */
+export function legacyMissPolicy(aiEnabled: boolean): MissPolicy {
+    return aiEnabled ? 'ai_then_fallback' : 'fallback_only';
 }
 
 /** 群是否已配置：未出现在 groupRules 里的群一律不处理（含被 @） */
@@ -31,19 +49,27 @@ export function isGroupConfigured(config: PluginConfig, groupId: string): boolea
 export function resolveGroupPolicy(config: PluginConfig, groupId: string): GroupPolicy {
     const rule: GroupRule | undefined = config.groupRules?.[groupId];
 
+    // 老字段逐个：群级显式值优先，否则回落全局
     const enabled = rule?.enabled !== undefined
-        ? { value: rule.enabled, source: 'group' as const }
-        : { value: config.group?.enabled !== false, source: 'global' as const };
-
+        ? rule.enabled
+        : config.group?.enabled !== false;
     const atOnly = rule?.atOnly !== undefined
-        ? { value: rule.atOnly, source: 'group' as const }
-        : { value: config.atOnly === true, source: 'global' as const };
-
+        ? rule.atOnly
+        : config.atOnly === true;
     const aiEnabled = rule?.aiEnabled !== undefined
-        ? { value: rule.aiEnabled, source: 'group' as const }
-        : { value: true, source: 'global' as const };
+        ? rule.aiEnabled
+        : true;
 
-    return { enabled, atOnly, aiEnabled };
+    // mode 由 enabled×atOnly 两个字段合成：任一项有群级覆盖就算 group 来源
+    const modeFromGroup = rule?.enabled !== undefined || rule?.atOnly !== undefined;
+    const missFromGroup = rule?.aiEnabled !== undefined;
+
+    return {
+        mode: { value: legacyGroupMode(enabled, atOnly), source: modeFromGroup ? 'group' : 'global' },
+        missPolicy: { value: legacyMissPolicy(aiEnabled), source: missFromGroup ? 'group' : 'global' },
+        atForceReply: { value: DEFAULT_AT_FORCE_REPLY, source: 'global' },
+        keywordOutsideAt: { value: DEFAULT_KEYWORD_OUTSIDE_AT, source: 'global' },
+    };
 }
 
 /** 兜底话术：群级字段为字符串时覆盖，null/缺省跟随全局 */

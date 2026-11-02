@@ -2,15 +2,24 @@
  * 服务端群配置真源（群规则 + 守卫处罚策略）的本地缓存
  *
  * 数据来自 GET /config/groups（x-bot-token），默认每 groupConfigRefreshMs（300s）刷新一次。
- * 生效规则：服务端有该群条目时，enabled/atOnly/aiEnabled/welcomeEnabled/welcomeTemplate
- * 以服务端为准；无条目回落到本地 groupRules。关键词、私聊兜底、延迟仍用本地配置。
+ * 生效规则：服务端有该群条目时，mode/missPolicy/atForceReply/keywordOutsideAt/
+ * cooldownSeconds/fallbackText/welcomeEnabled/welcomeTemplate 以服务端为准；
+ * 无条目回落到本地 groupRules（老字段映射成新口径）。关键词、私聊兜底、延迟仍用本地配置。
  * 拉取失败沿用上次缓存并记一条 warn，启动即拉一次。
  */
 
-import type { GuardConfig, PluginConfig, ServerGroupConfig } from '../types';
+import type { GroupMode, GuardConfig, MissPolicy, PluginConfig, ServerGroupConfig } from '../types';
 import { fetchGroupConfig } from '../services/kb-client';
 import { DEFAULT_GUARD_POLICY } from './guard-penalty';
-import { resolveGroupPolicy, type GroupPolicy } from './policy';
+import {
+    DEFAULT_AT_FORCE_REPLY,
+    DEFAULT_KEYWORD_OUTSIDE_AT,
+    legacyGroupMode,
+    legacyMissPolicy,
+    resolveGroupFallback,
+    resolveGroupPolicy,
+    type GroupPolicy,
+} from './policy';
 import { resolveWelcome } from './welcome';
 import { pluginState } from './state';
 
@@ -101,14 +110,40 @@ export function resolveEffectiveGroupPolicy(config: PluginConfig, groupId: strin
     const id = String(groupId);
     const server = cache.groups.get(id);
     if (server) {
+        // 新服务端一定下发 mode/missPolicy；老服务端只有旧字段，按同一套规则在内存里映射。
+        const mode: GroupMode = server.mode ?? legacyGroupMode(server.enabled, server.atOnly);
+        const missPolicy: MissPolicy = server.missPolicy ?? legacyMissPolicy(server.aiEnabled);
         return {
-            enabled: { value: server.enabled, source: 'server' },
-            atOnly: { value: server.atOnly, source: 'server' },
-            aiEnabled: { value: server.aiEnabled, source: 'server' },
+            mode: { value: mode, source: 'server' },
+            missPolicy: { value: missPolicy, source: 'server' },
+            atForceReply: { value: server.atForceReply ?? DEFAULT_AT_FORCE_REPLY, source: 'server' },
+            keywordOutsideAt: { value: server.keywordOutsideAt ?? DEFAULT_KEYWORD_OUTSIDE_AT, source: 'server' },
         };
     }
     if (config.groupRules?.[id] === undefined) return null;
     return resolveGroupPolicy(config, id);
+}
+
+/**
+ * 某群生效的规则冷却秒数：服务端群级值优先，null/缺省跟随全局。
+ * 负数/非数字视为未配置，避免坏缓存把冷却关掉。
+ */
+export function resolveEffectiveGroupCooldown(config: PluginConfig, groupId: string): number {
+    const value = cache.groups.get(String(groupId))?.cooldownSeconds;
+    if (typeof value === 'number' && Number.isFinite(value) && value >= 0) return value;
+    const global = Number(config.cooldownSeconds);
+    return Number.isFinite(global) && global > 0 ? global : 0;
+}
+
+/**
+ * 某群生效的兜底文案：服务端 fallbackText（非空）优先，
+ * 否则沿用本地群级/全局 fallback.groupAtText。
+ */
+export function resolveEffectiveGroupFallback(config: PluginConfig, groupId: string): string {
+    const server = cache.groups.get(String(groupId));
+    const own = typeof server?.fallbackText === 'string' ? server.fallbackText.trim() : '';
+    if (own) return own;
+    return resolveGroupFallback(config, String(groupId)).groupAtText;
 }
 
 export interface EffectiveWelcome {

@@ -5,7 +5,8 @@
  * 绝不把异常抛到消息处理链路；token 只放请求头，不写日志。
  */
 
-import type { BlockUser, GuardPenaltyPolicy, KbServiceConfig, ServerGroupConfig } from '../types';
+import type { BlockUser, GroupMode, GuardPenaltyPolicy, KbServiceConfig, MissPolicy, ServerGroupConfig } from '../types';
+import { legacyGroupMode, legacyMissPolicy } from '../core/policy';
 
 export interface AskRequest {
     text: string;
@@ -235,23 +236,79 @@ export interface GroupConfigPayload {
     version: string;
 }
 
+const GROUP_MODES: readonly string[] = ['off', 'all', 'at'];
+const MISS_POLICIES: readonly string[] = ['ai_then_fallback', 'fallback_only', 'none'];
+
+function isGroupMode(v: unknown): v is GroupMode {
+    return typeof v === 'string' && GROUP_MODES.includes(v);
+}
+
+function isMissPolicy(v: unknown): v is MissPolicy {
+    return typeof v === 'string' && MISS_POLICIES.includes(v);
+}
+
+/** 群级冷却：null/缺省 = 跟随全局；0..3600 的整数才收，坏值按跟随全局 */
+function parseCooldownSeconds(v: unknown): number | null {
+    if (v === null || v === undefined) return null;
+    if (typeof v !== 'number' || !Number.isInteger(v) || v < 0 || v > 3600) return null;
+    return v;
+}
+
+/** 群级兜底文案：null/缺省 = 跟随全局；空白串同样按跟随全局 */
+function parseFallbackText(v: unknown): string | null {
+    if (v === null || v === undefined) return null;
+    if (typeof v !== 'string') return null;
+    const text = v.trim();
+    return text ? text : null;
+}
+
+/**
+ * 解析一条服务端群配置。
+ * - 新服务端下发 mode/missPolicy；老服务端只有 enabled/atOnly/aiEnabled，按同一口径就地映射；
+ * - 输出统一补全成 { mode, missPolicy, atForceReply, keywordOutsideAt, cooldownSeconds, fallbackText }，
+ *   调用方不需要再判断服务端版本。
+ */
 function parseServerGroup(raw: unknown): ServerGroupConfig | null {
     if (!isObject(raw)) return null;
     const groupId = typeof raw.groupId === 'string' ? raw.groupId.trim() : '';
     if (!groupId) return null;
     const bool = (v: unknown): boolean | null => (typeof v === 'boolean' ? v : null);
-    const enabled = bool(raw.enabled);
-    const atOnly = bool(raw.atOnly);
-    const aiEnabled = bool(raw.aiEnabled);
     const welcomeEnabled = bool(raw.welcomeEnabled);
-    if (enabled === null || atOnly === null || aiEnabled === null || welcomeEnabled === null) return null;
+    if (welcomeEnabled === null) return null;
     let welcomeTemplate: string | null = null;
     if (raw.welcomeTemplate === null || raw.welcomeTemplate === undefined) welcomeTemplate = null;
     else if (typeof raw.welcomeTemplate === 'string') {
         const template = raw.welcomeTemplate.trim();
         welcomeTemplate = template ? template : null;
     } else return null;
-    return { groupId, enabled, atOnly, aiEnabled, welcomeEnabled, welcomeTemplate };
+
+    const enabled = bool(raw.enabled);
+    const atOnly = bool(raw.atOnly);
+    const aiEnabled = bool(raw.aiEnabled);
+    // 新字段优先；缺省时用旧字段推导。两者都缺说明条目形状不可用，丢弃。
+    const mode: GroupMode | null = isGroupMode(raw.mode)
+        ? raw.mode
+        : enabled !== null ? legacyGroupMode(enabled, atOnly === true) : null;
+    const missPolicy: MissPolicy | null = isMissPolicy(raw.missPolicy)
+        ? raw.missPolicy
+        : aiEnabled !== null ? legacyMissPolicy(aiEnabled) : null;
+    if (mode === null || missPolicy === null) return null;
+
+    return {
+        groupId,
+        // 旧字段统一由新口径反推，保证运行期只有一套真源
+        enabled: mode !== 'off',
+        atOnly: mode === 'at',
+        aiEnabled: missPolicy === 'ai_then_fallback',
+        welcomeEnabled,
+        welcomeTemplate,
+        mode,
+        missPolicy,
+        atForceReply: bool(raw.atForceReply) ?? true,
+        keywordOutsideAt: bool(raw.keywordOutsideAt) ?? true,
+        cooldownSeconds: parseCooldownSeconds(raw.cooldownSeconds),
+        fallbackText: parseFallbackText(raw.fallbackText),
+    };
 }
 
 function intInRange(v: unknown, min: number, max: number): number | null {

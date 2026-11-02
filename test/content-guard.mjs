@@ -129,14 +129,16 @@ assert.equal(outbox.length, outboxBefore, "守卫命中后不应继续自动回�
 assert.ok(logs.some((l) => l.includes("reason=guard_recall") && l.includes("user=" + OTHER) && l.includes("rule=加微信")), "应记录 guard_recall 日志");
 console.log("ok 1 - 命中屏蔽词即撤回并短路");
 
-// 2) 未命中不动
+// 2) 未命中不动：不撤回；自动回复按群策略走（mode=all + fallback_only → 回兜底）
 outboxBefore = outbox.length;
 deletesBefore = deletes.length;
 await handleMessage(ctx, event("group", "正常聊天内容"));
 await wait();
 assert.equal(deletes.length, deletesBefore, "未命中不应调用 delete_msg");
-assert.equal(outbox.length, outboxBefore, "未命中且无规则命中时应静默");
-console.log("ok 2 - 未命中不撤回");
+assert.equal(outbox.length, outboxBefore + 1, "守卫未命中不应拦截自动回复");
+const replyText = (outbox[outbox.length - 1].message || []).map((seg) => seg.data?.text ?? "").join("").trim();
+assert.equal(replyText, "群兜底", "未命中按未命中策略回兜底");
+console.log("ok 2 - 未命中不撤回，自动回复照常");
 
 // 3) 开关关闭 → 零撤销调用（关键词规则照常回复）
 reset({ guard: { enabled: false, words: ["加微信"], action: "recall", groupIds: [] } });

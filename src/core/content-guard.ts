@@ -53,7 +53,7 @@ export function guardTargetsGroup(config: GuardConfig | undefined, groupId: stri
     if (ids.length > 0) return ids.includes(groupId);
     if (pluginState.config.group?.enabled === false) return false;
     return isGroupManaged(pluginState.config, groupId) &&
-        (resolveEffectiveGroupPolicy(pluginState.config, groupId)?.enabled.value ?? false);
+        (resolveEffectiveGroupPolicy(pluginState.config, groupId)?.mode.value ?? 'off') !== 'off';
 }
 
 function normalizeAction(action: GuardAction | undefined): GuardAction {

@@ -9,7 +9,7 @@
  */
 
 import fs from 'fs';
-import type { GuardPenaltyPolicy, ServerGroupConfig } from '../types';
+import type { GroupMode, GuardPenaltyPolicy, MissPolicy, ServerGroupConfig } from '../types';
 
 export interface AdminCredentials {
     user: string;
@@ -25,12 +25,20 @@ const ADMIN_TIMEOUT_MS = 8000;
 
 export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
+/** PUT /admin/groups/:id 的请求体；新口径字段与旧字段服务端都接收 */
 export interface GroupPatch {
+    mode?: GroupMode;
+    missPolicy?: MissPolicy;
+    atForceReply?: boolean;
+    keywordOutsideAt?: boolean;
+    cooldownSeconds?: number | null;
+    fallbackText?: string | null;
+    welcomeEnabled?: boolean;
+    welcomeTemplate?: string | null;
+    /** 旧字段：仅老页面/老客户端会提交，服务端由新字段反推 */
     enabled?: boolean;
     atOnly?: boolean;
     aiEnabled?: boolean;
-    welcomeEnabled?: boolean;
-    welcomeTemplate?: string | null;
 }
 
 /** 解析 KEY=VALUE 形式的 env 文件；忽略注释、空行和 export 前缀 */

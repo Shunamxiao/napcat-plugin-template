@@ -59,18 +59,20 @@ test("groupRules 是白名单：未配置群不处理", () => {
   assert.equal(isGroupConfigured(cfg, "100000"), false);
 });
 
-test("群级 atOnly 优先于全局，并标明来源", () => {
+test("群级老字段映射成 mode/missPolicy，并标明来源", () => {
   const cfg = sanitizeConfig({
     atOnly: true,
     groupRules: { "928013991": { atOnly: false, aiEnabled: true }, "100000": {} },
   });
   const p = resolveGroupPolicy(cfg, "928013991");
-  assert.deepEqual(p.atOnly, { value: false, source: "group" });
-  assert.deepEqual(p.aiEnabled, { value: true, source: "group" });
-  // 未显式配置的字段回落全局
+  assert.deepEqual(p.mode, { value: "all", source: "group" });
+  assert.deepEqual(p.missPolicy, { value: "ai_then_fallback", source: "group" });
+  assert.deepEqual(p.atForceReply, { value: true, source: "global" });
+  assert.deepEqual(p.keywordOutsideAt, { value: true, source: "global" });
+  // 未显式配置的字段回落全局（全局 atOnly=true → at）
   const q = resolveGroupPolicy(cfg, "100000");
-  assert.deepEqual(q.atOnly, { value: true, source: "global" });
-  assert.deepEqual(q.aiEnabled, { value: true, source: "global" });
+  assert.deepEqual(q.mode, { value: "at", source: "global" });
+  assert.deepEqual(q.missPolicy, { value: "ai_then_fallback", source: "global" });
 });
 
 test("旧配置无 action 字段时默认 reply；ai/human 原样保留", () => {

@@ -83,16 +83,41 @@ export interface PluginConfigView {
     [key: string]: unknown
 }
 
+/** 群回复模式：off 一律不回；all 响应所有消息；at 仅被 @ 时响应 */
+export type GroupMode = 'off' | 'all' | 'at'
+/** 未命中关键词时的策略：先问 AI 再兜底 / 直接兜底 / 不回复 */
+export type MissPolicy = 'ai_then_fallback' | 'fallback_only' | 'none'
+
 /** /api/groups 的一条 */
 export interface GroupRuleEntry {
     groupId: string
     name: string
+    mode: GroupMode
+    missPolicy: MissPolicy
+    /** 仅 mode=at 有意义：被 @ 且未命中、missPolicy=none 时仍回兜底 */
+    atForceReply: boolean
+    /** 仅 mode=all 有意义：非 @ 命中关键词也回 */
+    keywordOutsideAt: boolean
+    /** 群级冷却秒数；null = 跟随全局 */
+    cooldownSeconds: number | null
+    /** 群级兜底文案；null = 跟随全局 */
+    fallbackText: string | null
+    /** 旧字段：由服务端按 mode/missPolicy 反推，页面只读回显 */
     enabled: boolean
     atOnly: boolean
     aiEnabled: boolean
     welcomeEnabled: boolean
     welcomeTemplate: string | null
     source: 'server' | 'local' | 'default'
+}
+
+/** /api/groups 响应：群列表 + 全局默认值（页面展示「跟随全局」用） */
+export interface GroupsResponse {
+    groups: GroupRuleEntry[]
+    global: {
+        cooldownSeconds: number
+        fallbackText: string
+    }
 }
 
 export interface GuardPolicy {

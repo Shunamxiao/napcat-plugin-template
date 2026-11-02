@@ -283,10 +283,10 @@ function registerWebUI(ctx: NapCatPluginContext): void {
 export { isBlocked, syncBlocklist, startBlocklistSync, stopBlocklistSync } from './core/blocklist';
 export { syncGuardWords, startGuardWordsSync, stopGuardWordsSync } from './core/guard-words';
 export { pickReply, planReply, resolveSend } from './core/escalation';
-export { isGroupConfigured, resolveGroupPolicy, resolveGroupFallback, buildGroupPolicies } from './core/policy';
+export { isGroupConfigured, resolveGroupPolicy, resolveGroupFallback, buildGroupPolicies, legacyGroupMode, legacyMissPolicy } from './core/policy';
 export { GuardPenaltyCounter, applyGuardPenalty, clearGuardPenalty, DEFAULT_GUARD_POLICY, guardPenaltyCounter } from './core/guard-penalty';
 export { HitLog, hitLog } from './core/hit-log';
-export { resolveGroupWelcome, resolveEffectiveGroupPolicy, isGroupManaged, buildEffectiveGroupPolicies, getServerGroup, getServerGroupConfigs, applyServerGroupEntry, applyServerGuardPolicy, getServerGuardPolicy, resolveGuardPolicy, syncGroupConfig, startGroupConfigSync, stopGroupConfigSync, getGroupConfigStatus } from './core/group-config';
+export { resolveGroupWelcome, resolveEffectiveGroupPolicy, resolveEffectiveGroupCooldown, resolveEffectiveGroupFallback, isGroupManaged, buildEffectiveGroupPolicies, getServerGroup, getServerGroupConfigs, applyServerGroupEntry, applyServerGuardPolicy, getServerGuardPolicy, resolveGuardPolicy, syncGroupConfig, startGroupConfigSync, stopGroupConfigSync, getGroupConfigStatus } from './core/group-config';
 export { parseEnvFile, readAdminCredentials, putServerGroup, putServerGuardPolicy, getServerGuardPolicy as getServerGuardPolicyRemote } from './services/admin-client';
 export { appendHandoffRecord } from './core/handoff';
 export { classifySendError, sendWithRetry, MIN_RETRY_DELAY_MS } from './core/send-retry';
