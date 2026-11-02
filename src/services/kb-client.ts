@@ -334,3 +334,36 @@ export async function fetchGuardWords(
     }
     return words;
 }
+
+export interface KeywordReportItem {
+    key: string;
+    count: number;
+    lastAt: string;
+}
+
+export interface KeywordReportPayload {
+    items: KeywordReportItem[];
+    reportedAt: string;
+}
+
+/**
+ * 上报关键词命中统计（POST /stats/keywords，x-bot-token）。
+ * 返回 true 只代表服务端 2xx 且响应是 JSON；网络失败/超时一律 false，绝不抛错。
+ */
+export async function reportKeywordStats(
+    cfg: KbServiceConfig,
+    payload: KeywordReportPayload,
+    fetchImpl: FetchLike = fetch,
+): Promise<boolean> {
+    const data = await requestJson(
+        cfg,
+        '/stats/keywords',
+        {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', 'x-bot-token': String(cfg.token || '') },
+            body: JSON.stringify(payload),
+        },
+        fetchImpl,
+    );
+    return isObject(data);
+}

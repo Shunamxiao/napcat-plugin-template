@@ -7,10 +7,10 @@ import { EventType } from 'napcat-types/napcat-onebot/event/index';
 import { pluginState } from '../core/state';
 import { rememberSentMessage } from '../core/sent-messages';
 import { resolveGroupWelcome } from '../core/group-config';
-import { renderWelcomeTemplate, resolveWelcome } from '../core/welcome';
+import { buildWelcomeMessage, renderWelcomeTemplate, resolveWelcome } from '../core/welcome';
 
 // 保持既有导出面（test/welcome.mjs 从入口导出 resolveWelcome）
-export { resolveWelcome, renderWelcomeTemplate };
+export { buildWelcomeMessage, resolveWelcome, renderWelcomeTemplate };
 
 /** OneBot 事件按需读取的宽松结构；不同版本可能存在字段差异 */
 type EventLike = Record<string, unknown>;
@@ -59,14 +59,16 @@ async function handleGroupIncrease(ctx: NapCatPluginContext, ev: EventLike): Pro
         needNickname ? fetchNickname(ctx, groupId, userId) : Promise.resolve(''),
         needGroupName ? fetchGroupName(ctx, groupId) : Promise.resolve(''),
     ]);
-    const text = renderWelcomeTemplate(template, groupId, userId, nickname, groupName);
+    // 模板开头的 @{nickname} 转成真正的 at 段；其余位置保持文本，避免多点 @ 刷屏
+    const message = buildWelcomeMessage(template, groupId, userId, nickname, groupName);
+    if (message.length === 0) return;
     try {
         const result = await ctx.actions.call(
             'send_msg',
             {
                 message_type: 'group',
                 group_id: groupId,
-                message: [{ type: 'text', data: { text } }],
+                message,
             },
             ctx.adapterName,
             ctx.pluginManager.config,

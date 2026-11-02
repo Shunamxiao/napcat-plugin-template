@@ -33,6 +33,7 @@ import { buildEffectiveGroupPolicies, startGroupConfigSync, stopGroupConfigSync 
 import { clearGuardPenalty } from './core/guard-penalty';
 import { hitLog } from './core/hit-log';
 import { initKeywordStats, shutdownKeywordStats } from './core/keyword-stats';
+import { startKeywordReport, stopKeywordReport } from './core/keyword-report';
 import { startBlocklistSync, stopBlocklistSync } from './core/blocklist';
 import { startGuardWordsSync, stopGuardWordsSync } from './core/guard-words';
 import { clearPrivateMerge, handleMessage } from './handlers/message-handler';
@@ -78,6 +79,8 @@ export const plugin_init: PluginModule['plugin_init'] = async (ctx) => {
         startGuardWordsSync();
         // 7. 服务端群配置 + 守卫处罚策略：启动拉一次，之后按 groupConfigRefreshMs 刷新
         startGroupConfigSync();
+        // 8. 关键词命中统计：定时上报服务端，供报表统计零命中规则
+        startKeywordReport();
 
         ctx.logger.info('插件初始化完成');
     } catch (error) {
@@ -121,6 +124,7 @@ export const plugin_cleanup: PluginModule['plugin_cleanup'] = async (ctx) => {
         stopBlocklistSync();
         stopGuardWordsSync();
         stopGroupConfigSync();
+        stopKeywordReport();
         clearGuardPenalty();
         hitLog.clear();
         clearPrivateMerge();
@@ -293,7 +297,8 @@ export { rememberSentMessage, isSentByThisInstance, clearSentMessages } from './
 export { beginCollect, clearCollect, collectKey, getCollect, stepCollect, COLLECT_TIMEOUT_MS } from './core/collect';
 export { keywordsToText, textToKeywords } from './config';
 export { initKeywordStats, recordKeywordHit, snapshotKeywordStats, resetKeywordStats, flushKeywordStats, shutdownKeywordStats, keywordStatKey } from './core/keyword-stats';
-export { resolveWelcome, renderWelcomeTemplate } from './handlers/event-handler';
+export { buildKeywordReport, reportKeywordStatsOnce, startKeywordReport, stopKeywordReport } from './core/keyword-report';
+export { buildWelcomeMessage, resolveWelcome, renderWelcomeTemplate } from './handlers/event-handler';
 export { handleMessage, resolveImageSource, sendRelayMessage, clearPrivateMerge, SERVICE_DOWN_REPLY } from './handlers/message-handler';
 export { registerApiRoutes } from './services/api-service';
 export { fetchGroupConfig } from './services/kb-client';

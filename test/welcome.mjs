@@ -12,7 +12,7 @@
  */
 
 import assert from "node:assert/strict";
-import { resolveWelcome, sanitizeConfig } from "../dist/index.mjs";
+import { buildWelcomeMessage, resolveWelcome, sanitizeConfig } from "../dist/index.mjs";
 
 const GLOBAL_ON = { enabled: true, template: "全局欢迎 {user_id}" };
 const GLOBAL_OFF = { enabled: false, template: "全局欢迎 {user_id}" };
@@ -71,5 +71,24 @@ assert.equal(legacy.groupRules["7"].atOnly, true);
 // 9) 非法值丢弃
 const bad = sanitizeConfig({ groupRules: { "8": { welcome: { enabled: "yes", template: 42 } } } });
 assert.equal(bad.groupRules["8"].welcome, undefined);
+
+// 10) 开头的 @{nickname} 生成 at 段；昵称取不到也照样发 at，不报错
+assert.deepEqual(
+  buildWelcomeMessage("@{nickname} 欢迎加入 {group_name}", "123", "456", "小明", "测试群"),
+  [
+    { type: "at", data: { qq: "456" } },
+    { type: "text", data: { text: "欢迎加入 测试群" } },
+  ],
+);
+assert.deepEqual(
+  buildWelcomeMessage("@{nickname} 欢迎", "123", "456", "", ""),
+  [{ type: "at", data: { qq: "456" } }, { type: "text", data: { text: "欢迎" } }],
+);
+
+// 11) 非开头的 @{nickname} 仍是纯文本，其余占位符行为不变
+assert.deepEqual(
+  buildWelcomeMessage("欢迎 @{nickname}，群号 {group_id}", "123", "456", "小明", ""),
+  [{ type: "text", data: { text: "欢迎 @小明，群号 123" } }],
+);
 
 console.log("welcome tests passed");
