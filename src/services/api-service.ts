@@ -67,13 +67,14 @@ function portFromHost(req: PluginHttpRequest): number | null {
 }
 
 /**
- * 实例真实 WebUI 端口（契约 §2.5 端口解析）：读 configPath 同目录上一级的 webui.json 的 port。
+ * 实例真实 WebUI 端口（契约 §2.5 端口解析）：读 configPath 上两级的 webui.json 的 port
+ * （configPath=<workdir>/config/plugins/<plugin>/config.json，webui.json 在 <workdir>/config/）。
  * 经 SSH 隧道访问时请求 Host 端口是隧道口而非实例口，转发拨号必须拨真实端口；
  * webui.json 缺文件/坏 JSON/无合法 port 时回退 Host 头端口。每次重读，小 JSON 代价可忽略。
  */
 function resolveWebuiPort(ctx: NapCatPluginContext, req: PluginHttpRequest): number | null {
     try {
-        const file = path.resolve(path.dirname(ctx.configPath), '..', 'webui.json');
+        const file = path.resolve(path.dirname(ctx.configPath), '..', '..', 'webui.json');
         const raw = JSON.parse(fs.readFileSync(file, 'utf-8')) as { port?: unknown };
         const port = Number(raw?.port);
         if (Number.isInteger(port) && port > 0 && port <= 65535) return port;

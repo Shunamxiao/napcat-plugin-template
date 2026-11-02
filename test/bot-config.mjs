@@ -32,9 +32,9 @@ const SELF = "1457278554";
 const TOKEN = "realsecret";
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "autoreply-bot-config-"));
-// 真实布局：configPath 在 <插件目录>/config/ 下，webui.json 在其上一级（<插件目录>/webui.json）
+// 真实布局：configPath 在 <workdir>/config/plugins/<plugin>/ 下，webui.json 在 <workdir>/config/（上两级）
 fs.mkdirSync(path.join(dir, "config"), { recursive: true });
-const configPath = path.join(dir, "config", "config.json");
+const configPath = path.join(dir, "config", "plugins", "napcat-plugin-autoreply", "config.json");
 const baseConfig = {
     enabled: true,
     cooldownSeconds: 0,
@@ -51,6 +51,7 @@ const baseConfig = {
     guard: { enabled: false },
     keywords: [],
 };
+fs.mkdirSync(path.dirname(configPath), { recursive: true });
 fs.writeFileSync(configPath, JSON.stringify(baseConfig));
 
 const logs = [];
@@ -345,7 +346,7 @@ assert.ok(
 console.log("ok 7 - startServerConfigSync/stopServerConfigSync 生命周期无 ReferenceError");
 
 // ---------- 8) 端口解析：webui.json 优先于 Host 头端口（SSH 隧道场景） ----------
-fs.writeFileSync(path.join(dir, "webui.json"), JSON.stringify({ port: 7777, token: "x" }));
+fs.writeFileSync(path.join(dir, "config", "webui.json"), JSON.stringify({ port: 7777, token: "x" }));
 globalThis.fetch = async (url) => {
     const u = String(url);
     if (u.includes("/plugin/napcat-plugin-account/api/instances")) {
@@ -362,7 +363,7 @@ assert.ok(lastInstancesUrl.includes("127.0.0.1:7777/"), "拨号端口应取 webu
 const statusTunnel = await call("GET /status", { headers: { host: "192.168.1.204:16099" } });
 assert.equal(statusTunnel.body.data.webuiPort, 7777, "status.webuiPort 应为 webui.json 端口");
 assert.equal(statusTunnel.body.data.instanceName, "acc-main", "隧道场景 instanceName 仍应按 uin 匹配成功");
-fs.rmSync(path.join(dir, "webui.json"));
+// webui.json 已随 dir 递归清理
 console.log("ok 8 - webui.json 端口优先于 Host 头端口");
 
 // ---------- 清理 ----------
