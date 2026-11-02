@@ -307,7 +307,7 @@ export default function PrivateKeywordsPage() {
     }
 
     return (
-        <div className="space-y-4 max-w-4xl">
+        <div className="space-y-4 max-w-7xl">
             <div className="card animate-fade-in-up p-5">
                 <h3 className="text-sm font-semibold text-gray-900 dark:text-white mb-5">私聊</h3>
                 <div className="space-y-5">
@@ -322,11 +322,12 @@ export default function PrivateKeywordsPage() {
                         <div className="text-xs text-gray-400 mb-2">关键词、FAQ 与 AI 都没有命中时发送这句；留空 = 不回</div>
                         <textarea
                             className="input-field"
-                            rows={3}
+                            rows={6}
                             value={defaultReply}
                             onChange={(e) => setDefaultReply(e.target.value)}
                             placeholder="例如：我现在不在，稍后回复你～"
                         />
+                        <div className="text-[11px] text-gray-400 mt-1 text-right">{defaultReply.length} 字</div>
                     </div>
                     <div>
                         <div className="text-sm font-medium text-gray-800 dark:text-gray-200 mb-1">私聊白名单</div>
@@ -451,14 +452,16 @@ export default function PrivateKeywordsPage() {
                                                     </select>
                                                 </td>
                                                 <td className="py-2 pr-2 align-top">
-                                                    <input
+                                                    <textarea
                                                         className={`input-field ${hasPool ? 'opacity-60' : ''}`}
+                                                        rows={6}
                                                         value={row.reply}
                                                         disabled={hasPool}
                                                         title={hasPool ? '有回复池时随机发池内一条；回复内容仅作池空时兜底' : undefined}
                                                         placeholder={hasPool ? '有回复池时随机发池内一条' : '命中后发送的内容'}
                                                         onChange={(e) => patchRow(row.id, { reply: e.target.value })}
                                                     />
+                                                    <div className="text-[11px] text-gray-400 mt-1 text-right">{row.reply.length} 字</div>
                                                     {hasPool && (
                                                         <div className="text-xs text-gray-400 mt-1">有回复池时随机发池内一条；回复内容仅作池空时兜底</div>
                                                     )}
@@ -509,11 +512,12 @@ export default function PrivateKeywordsPage() {
                                                                 <div className="text-xs text-gray-400 mb-2">有内容时随机发一条，优先于「回复内容」；清空即删除该字段</div>
                                                                 <textarea
                                                                     className="input-field"
-                                                                    rows={4}
+                                                                    rows={6}
                                                                     value={row.repliesText}
                                                                     onChange={(e) => patchRow(row.id, { repliesText: e.target.value })}
                                                                     placeholder={'回复一\n回复二'}
                                                                 />
+                                                                <div className="text-[11px] text-gray-400 mt-1 text-right">{parseReplyPool(row.repliesText).length} 条 / {row.repliesText.length} 字</div>
                                                             </div>
                                                             <div className="space-y-3">
                                                                 <div>

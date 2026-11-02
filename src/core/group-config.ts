@@ -16,6 +16,7 @@ import {
     DEFAULT_KEYWORD_OUTSIDE_AT,
     legacyGroupMode,
     legacyMissPolicy,
+    resolveGroupDefaultPolicy,
     resolveGroupFallback,
     resolveGroupPolicy,
     type GroupPolicy,
@@ -103,10 +104,10 @@ export function isGroupManaged(config: PluginConfig, groupId: string): boolean {
 }
 
 /**
- * 某群的生效口径：服务端条目优先，否则回落到本地 groupRules。
- * 未管理的群返回 null（调用方应一律静默）。
+ * 某群的生效口径：服务端条目 → 本地 groupRules → 全局 groupDefault。
+ * 永远返回口径（未配置群走 groupDefault），调用方不再需要判空。
  */
-export function resolveEffectiveGroupPolicy(config: PluginConfig, groupId: string): GroupPolicy | null {
+export function resolveEffectiveGroupPolicy(config: PluginConfig, groupId: string): GroupPolicy {
     const id = String(groupId);
     const server = cache.groups.get(id);
     if (server) {
@@ -120,30 +121,42 @@ export function resolveEffectiveGroupPolicy(config: PluginConfig, groupId: strin
             keywordOutsideAt: { value: server.keywordOutsideAt ?? DEFAULT_KEYWORD_OUTSIDE_AT, source: 'server' },
         };
     }
-    if (config.groupRules?.[id] === undefined) return null;
-    return resolveGroupPolicy(config, id);
+    if (config.groupRules?.[id] !== undefined) return resolveGroupPolicy(config, id);
+    return resolveGroupDefaultPolicy(config);
 }
 
 /**
- * 某群生效的规则冷却秒数：服务端群级值优先，null/缺省跟随全局。
- * 负数/非数字视为未配置，避免坏缓存把冷却关掉。
+ * 某群生效的规则冷却秒数：服务端群级值优先；未配置群用 groupDefault.cooldownSeconds；
+ * 其余跟随全局。负数/非数字视为未配置，避免坏缓存把冷却关掉。
  */
 export function resolveEffectiveGroupCooldown(config: PluginConfig, groupId: string): number {
-    const value = cache.groups.get(String(groupId))?.cooldownSeconds;
+    const id = String(groupId);
+    const value = cache.groups.get(id)?.cooldownSeconds;
     if (typeof value === 'number' && Number.isFinite(value) && value >= 0) return value;
+    // groupDefault 只对「服务端无条目且本地无群规则」的群生效
+    if (!cache.groups.has(id) && config.groupRules?.[id] === undefined) {
+        const own = config.groupDefault?.cooldownSeconds;
+        if (typeof own === 'number' && Number.isFinite(own) && own >= 0) return own;
+    }
     const global = Number(config.cooldownSeconds);
     return Number.isFinite(global) && global > 0 ? global : 0;
 }
 
 /**
  * 某群生效的兜底文案：服务端 fallbackText（非空）优先，
- * 否则沿用本地群级/全局 fallback.groupAtText。
+ * 否则本地群级 → groupDefault（未配置群）→ 全局 fallback.groupAtText。
  */
 export function resolveEffectiveGroupFallback(config: PluginConfig, groupId: string): string {
-    const server = cache.groups.get(String(groupId));
+    const id = String(groupId);
+    const server = cache.groups.get(id);
     const own = typeof server?.fallbackText === 'string' ? server.fallbackText.trim() : '';
     if (own) return own;
-    return resolveGroupFallback(config, String(groupId)).groupAtText;
+    if (config.groupRules?.[id] !== undefined) {
+        return resolveGroupFallback(config, id).groupAtText;
+    }
+    const fallback = config.groupDefault?.fallbackText;
+    if (typeof fallback === 'string' && fallback.trim()) return fallback.trim();
+    return config.fallback?.groupAtText ?? '';
 }
 
 export interface EffectiveWelcome {

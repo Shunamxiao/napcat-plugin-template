@@ -89,9 +89,27 @@ export interface GroupConfig {
     whitelistText?: string;
 }
 
+/**
+ * 未配置群（服务端无条目、本地 groupRules 也没有）的默认策略。
+ * 老行为是「一律静默」，现改为走这里，默认 at + 关键词命中才回，防刷。
+ */
+export interface GroupDefaultConfig {
+    /** 群模式；默认 at（仅 @ 或命中关键词时响应） */
+    mode: GroupMode;
+    /** 未命中关键词时的策略；默认 none（不回复） */
+    missPolicy: MissPolicy;
+    /** 仅 mode=at 有意义：被 @ 且未命中、missPolicy=none 时仍回兜底 */
+    atForceReply: boolean;
+    /** 非 @ 消息命中关键词是否回复（at / all 两种模式都生效） */
+    keywordOutsideAt: boolean;
+    /** 冷却秒数；null = 跟随全局 cooldownSeconds */
+    cooldownSeconds: number | null;
+    /** 兜底文案；null = 跟随全局 fallback.groupAtText */
+    fallbackText: string | null;
+}
+
 /** 群级规则：未设置的字段沿用全局配置 */
-export interface GroupRule {
-    /** 该群是否启用自动回复，false = 该群完全不回复；未在 groupRules 出现的群一律不处理 */
+export interface GroupRule {    /** 该群是否启用自动回复，false = 该群完全不回复；未在 groupRules 出现的群一律不处理 */
     enabled?: boolean;
     /** 是否仅 @ 机器人时回复，覆盖全局 atOnly */
     atOnly?: boolean;
@@ -285,6 +303,8 @@ export interface PluginConfig {
     groupConfigs: Record<string, GroupConfig>;
     /** 群级规则：键为群号，未配置的群沿用全局规则 */
     groupRules?: Record<string, GroupRule>;
+    /** 未配置群（服务端与本地都没有条目）的默认策略 */
+    groupDefault?: GroupDefaultConfig;
     /** 多账号同群时跨实例去重,避免重复回复(默认开启) */
     crossAccountDedup?: boolean;
     /** WebUI 编辑用的多行文本形式(不参与消息匹配) */

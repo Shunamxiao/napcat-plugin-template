@@ -160,14 +160,22 @@ assert.equal(outbox.length, before + 1, "mode=all + fallback_only 未命中应�
 assert.equal(textOf(outbox[outbox.length - 1]), "全局群兜底");
 console.log("ok 2b - all + fallback_only：非 @ 未命中回兜底");
 
-// 3) at：非 @ 不回（即便命中关键词）
+// 3) at：非 @ 命中关键词 → 按 keywordOutsideAt（默认 true）回复
 hitLog.clear();
 before = outbox.length;
 await handleMessage(ctx, groupEvent("怎么下载", false, "100000003"));
 await wait();
-assert.equal(outbox.length, before, "mode=at 非 @ 不应回复");
+assert.equal(outbox.length, before + 1, "mode=at 非 @ 命中关键词应回复");
+assert.equal(textOf(outbox[outbox.length - 1]), "规则回复");
+console.log("ok 3 - at：非 @ 命中关键词按 keywordOutsideAt 回复");
+
+// 3b) at：非 @ 未命中 → 静默
+before = outbox.length;
+await handleMessage(ctx, groupEvent("随便聊聊", false, "100000003"));
+await wait();
+assert.equal(outbox.length, before, "mode=at 非 @ 未命中不应回复");
 assert.ok(hitLog.list(10).some((e) => e.detail?.startsWith("not_at")), "not_at 要进命中日志");
-console.log("ok 3 - at：非 @ 不回，命中日志 reason=not_at");
+console.log("ok 3b - at：非 @ 未命中静默，命中日志 reason=not_at");
 
 // 4) at + @ 未命中 + missPolicy=none + atForceReply=true → 回兜底
 applyServerGroupEntry(serverEntry("100000004", "at", "none", { atForceReply: true }));

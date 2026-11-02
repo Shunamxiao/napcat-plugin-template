@@ -27,13 +27,14 @@ import type {
 } from 'napcat-types/napcat-onebot/network/plugin/types';
 import { EventType } from 'napcat-types/napcat-onebot/event/index';
 
-import { DEFAULT_CONFIG, buildConfigSchema, groupRulesToText, idListToText, keywordsToText, textToGroupRules, textToIdList, textToKeywords, textToLines } from './config';
+import { DEFAULT_CONFIG, buildConfigSchema, groupRulesToText, idListToText, keywordsToText, textToGroupRules, textToIdList, textToKeywords, textToLines, type ConfigSchemaSummary } from './config';
 import { maskConfig, pluginState } from './core/state';
-import { buildEffectiveGroupPolicies, startGroupConfigSync, stopGroupConfigSync } from './core/group-config';
+import { buildEffectiveGroupPolicies, getGroupConfigStatus, getServerGroupConfigs, resolveEffectiveGroupPolicy, startGroupConfigSync, stopGroupConfigSync } from './core/group-config';
 import { clearGuardPenalty } from './core/guard-penalty';
 import { hitLog } from './core/hit-log';
 import { initKeywordStats, shutdownKeywordStats } from './core/keyword-stats';
 import { startKeywordReport, stopKeywordReport } from './core/keyword-report';
+import { buildTrafficPayload, commitTrafficReport, hourBucket, recordTrafficIncoming, recordTrafficReply, recordTrafficRuleHit, reportTrafficOnce, resetTraffic, snapshotTraffic, startTrafficReport, stopTrafficReport } from './core/traffic-stats';
 import { startBlocklistSync, stopBlocklistSync } from './core/blocklist';
 import { startGuardWordsSync, stopGuardWordsSync } from './core/guard-words';
 import { clearPrivateMerge, handleMessage } from './handlers/message-handler';
@@ -65,7 +66,8 @@ export const plugin_init: PluginModule['plugin_init'] = async (ctx) => {
         ctx.logger.info('关键词命中统计文件: ' + keywordStatsFile);
 
         // 2. 生成配置 Schema（用于 NapCat WebUI 配置面板）
-        plugin_config_ui = buildConfigSchema(ctx);
+        // 原生扩展页只保留老字段 + 只读摘要；React 插件页是唯一编辑入口
+        plugin_config_ui = buildConfigSchema(ctx, buildSchemaSummary());
 
         // 3. 注册 WebUI 页面和静态资源
         registerWebUI(ctx);
@@ -81,6 +83,18 @@ export const plugin_init: PluginModule['plugin_init'] = async (ctx) => {
         startGroupConfigSync();
         // 8. 关键词命中统计：定时上报服务端，供报表统计零命中规则
         startKeywordReport();
+        // 9. 流量计数：每 5 分钟批量上报 /stats/traffic
+        startTrafficReport();
+
+        // 群配置同步是异步的：同步完成后刷新原生页摘要（模式分布 / 上次同步时间）
+        const schemaTimer = setTimeout(() => {
+            try {
+                plugin_config_ui = buildConfigSchema(ctx, buildSchemaSummary());
+            } catch (e) {
+                ctx.logger.debug('刷新配置摘要失败: ' + (e instanceof Error ? e.message : String(e)));
+            }
+        }, 3000);
+        if (typeof schemaTimer.unref === 'function') schemaTimer.unref();
 
         ctx.logger.info('插件初始化完成');
     } catch (error) {
@@ -125,6 +139,7 @@ export const plugin_cleanup: PluginModule['plugin_cleanup'] = async (ctx) => {
         stopGuardWordsSync();
         stopGroupConfigSync();
         stopKeywordReport();
+        stopTrafficReport();
         clearGuardPenalty();
         hitLog.clear();
         clearPrivateMerge();
@@ -215,6 +230,8 @@ export const plugin_set_config: PluginModule['plugin_set_config'] = async (ctx, 
 
     // 知识库相关配置块：老页面/原生面板没提交时沿用当前值，避免一次保存把配置清空
     if (!cfg.kbService) cfg.kbService = pluginState.config.kbService;
+    // 群默认策略只有 React 页提交；原生面板保存时沿用当前值，不能被重置成默认
+    if (!cfg.groupDefault) cfg.groupDefault = pluginState.config.groupDefault;
     if (!cfg.aiTrigger) cfg.aiTrigger = pluginState.config.aiTrigger;
     if (!cfg.blocklist) cfg.blocklist = pluginState.config.blocklist;
     if (!cfg.fallback) cfg.fallback = pluginState.config.fallback;
@@ -225,6 +242,10 @@ export const plugin_set_config: PluginModule['plugin_set_config'] = async (ctx, 
     if (!cfg.loopGuard) cfg.loopGuard = pluginState.config.loopGuard;
 
     pluginState.replaceConfig(cfg);
+    // 原生页摘要可能已变化（关键词条数/模式分布），保存后立即重建
+    try {
+        plugin_config_ui = buildConfigSchema(ctx, buildSchemaSummary());
+    } catch { /* 摘要刷新失败不影响保存 */ }
     // 刷新间隔/服务地址可能刚被改过：重启词表定时器并立即同步一次
     startGuardWordsSync();
     startGroupConfigSync();
@@ -247,6 +268,23 @@ export const plugin_on_config_change: PluginModule['plugin_on_config_change'] = 
 };
 
 // ==================== 内部函数 ====================
+
+/** 原生扩展页只读摘要：模式分布 / 关键词条数 / 上次同步时间 */
+function buildSchemaSummary(): ConfigSchemaSummary {
+    const config = pluginState.config;
+    const groupModes = { all: 0, at: 0, off: 0 };
+    const ids = new Set<string>();
+    for (const entry of getServerGroupConfigs()) ids.add(entry.groupId);
+    for (const groupId of Object.keys(config.groupRules ?? {})) ids.add(groupId);
+    for (const groupId of ids) {
+        groupModes[resolveEffectiveGroupPolicy(config, groupId).mode.value] += 1;
+    }
+    return {
+        groupModes,
+        keywordCount: config.keywords?.length ?? 0,
+        lastSyncAt: getGroupConfigStatus().lastSyncAt,
+    };
+}
 
 /**
  * 注册 WebUI 页面和静态资源
@@ -283,7 +321,7 @@ function registerWebUI(ctx: NapCatPluginContext): void {
 export { isBlocked, syncBlocklist, startBlocklistSync, stopBlocklistSync } from './core/blocklist';
 export { syncGuardWords, startGuardWordsSync, stopGuardWordsSync } from './core/guard-words';
 export { pickReply, planReply, resolveSend } from './core/escalation';
-export { isGroupConfigured, resolveGroupPolicy, resolveGroupFallback, buildGroupPolicies, legacyGroupMode, legacyMissPolicy } from './core/policy';
+export { isGroupConfigured, resolveGroupPolicy, resolveGroupDefaultPolicy, resolveGroupFallback, buildGroupPolicies, legacyGroupMode, legacyMissPolicy, DEFAULT_GROUP_DEFAULT } from './core/policy';
 export { GuardPenaltyCounter, applyGuardPenalty, clearGuardPenalty, DEFAULT_GUARD_POLICY, guardPenaltyCounter } from './core/guard-penalty';
 export { HitLog, hitLog } from './core/hit-log';
 export { resolveGroupWelcome, resolveEffectiveGroupPolicy, resolveEffectiveGroupCooldown, resolveEffectiveGroupFallback, isGroupManaged, buildEffectiveGroupPolicies, getServerGroup, getServerGroupConfigs, applyServerGroupEntry, applyServerGuardPolicy, getServerGuardPolicy, resolveGuardPolicy, syncGroupConfig, startGroupConfigSync, stopGroupConfigSync, getGroupConfigStatus } from './core/group-config';
@@ -298,6 +336,7 @@ export { beginCollect, clearCollect, collectKey, getCollect, stepCollect, COLLEC
 export { keywordsToText, textToKeywords } from './config';
 export { initKeywordStats, recordKeywordHit, snapshotKeywordStats, resetKeywordStats, flushKeywordStats, shutdownKeywordStats, keywordStatKey } from './core/keyword-stats';
 export { buildKeywordReport, reportKeywordStatsOnce, startKeywordReport, stopKeywordReport } from './core/keyword-report';
+export { hourBucket, recordTrafficIncoming, recordTrafficReply, recordTrafficRuleHit, snapshotTraffic, buildTrafficPayload, commitTrafficReport, resetTraffic, reportTrafficOnce, startTrafficReport, stopTrafficReport } from './core/traffic-stats';
 export { buildWelcomeMessage, resolveWelcome, renderWelcomeTemplate } from './handlers/event-handler';
 export { handleMessage, resolveImageSource, sendRelayMessage, clearPrivateMerge, SERVICE_DOWN_REPLY } from './handlers/message-handler';
 export { registerApiRoutes } from './services/api-service';

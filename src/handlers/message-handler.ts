@@ -10,6 +10,7 @@ import { pickReply, planReply, resolveSend, type Plan, type SendDecision } from 
 import { resolveEffectiveGroupCooldown, resolveEffectiveGroupFallback, resolveEffectiveGroupPolicy } from '../core/group-config';
 import { hitLog } from '../core/hit-log';
 import { recordKeywordHit } from '../core/keyword-stats';
+import { recordTrafficIncoming, recordTrafficReply, type TrafficReplySource } from '../core/traffic-stats';
 import { appendHandoffRecord } from '../core/handoff';
 import { classifySendError, sendWithRetry } from '../core/send-retry';
 import { SendGuard } from '../core/send-guard';
@@ -68,6 +69,13 @@ export async function handleMessage(ctx: NapCatPluginContext, event: OB11Message
     const kind = event.message_type;
     if (kind !== 'private' && kind !== 'group') return;
 
+    const senderId = String(event.sender?.user_id ?? 0);
+    const groupId = kind === 'group' ? String(event.group_id ?? '') : undefined;
+    /** 流量统计口径：只允许 private / group:<群号> */
+    const trafficScope = kind === 'group' ? 'group:' + (groupId ?? '') : 'private';
+    // 收到即计数：黑名单/忽略发送者的消息也算收到，replies 只算真正发出的
+    recordTrafficIncoming(trafficScope, senderId);
+
     const text = extractText(event);
     // 群内容守卫独立于自动回复总开关：命中即撤回/警告并短路，不再走规则与 FAQ
     if (kind === 'group' && await runGroupGuard(ctx, event, text)) return;
@@ -75,12 +83,10 @@ export async function handleMessage(ctx: NapCatPluginContext, event: OB11Message
     if (!config.enabled) return;
     pluginState.incrementProcessed();
 
-    const senderId = String(event.sender?.user_id ?? 0);
     // self_id 优先取事件本身，其次取 init 时 get_login_info 的结果。
     // ctx.pluginManager.config 里不保证有 self_id（历史 bug：取不到导致 atBot 恒为 false，群 @ 被静默）。
     const selfId = String(event.self_id || pluginState.selfId || ctx.pluginManager.config?.self_id || '');
 
-    const groupId = kind === 'group' ? String(event.group_id ?? '') : undefined;
     const atBot = kind === 'group' ? isDirectedAtBot(event, selfId) : false;
 
     /**
@@ -150,32 +156,35 @@ export async function handleMessage(ctx: NapCatPluginContext, event: OB11Message
         return;
     }
 
-    // 群聊：只有已配置的群才处理（服务端条目或本地 groupRules），未配置群一律静默（含 @）
+    // 群聊：服务端条目 → 本地 groupRules → 全局 groupDefault（未配置群默认防刷口径）
     if (kind === 'group') {
         if (!config.group.enabled) { recordSkip('group_disabled', '群聊总开关关闭'); return; }
         if (!checkWhitelist(config.group.whitelist, groupId ?? '')) {
             recordSkip('group_not_whitelisted', '群不在白名单内');
             return;
         }
-        // 生效口径：服务端有条目以服务端为准，否则回落本地 groupRules；都没有则不处理
+        // 生效口径：服务端有条目以服务端为准，否则本地 groupRules，再否则 groupDefault
         const policy = resolveEffectiveGroupPolicy(config, groupId ?? '');
-        if (!policy) { recordSkip('unconfigured', '群不在 groupRules 且服务端无条目'); return; }
         const mode = policy.mode.value;
         const missPolicy = policy.missPolicy.value;
         if (mode === 'off') { recordSkip('mode_off', '群模式=关闭，一律不回'); return; }
         // 追问中的用户消息优先作为答案消费；不要求 @，否则群内无法回答
         if (await consumeCollectAnswer(ctx, event, collectKey('group', senderId, groupId ?? ''), senderId, groupId, text, 'group')) return;
-        if (mode === 'at' && !atBot) {
-            recordSkip('not_at', '群模式=仅@，本条未 @');
-            return;
-        }
         const groupRule = config.groupRules?.[groupId ?? ''];
         // 群专属关键词非空时只按群规则匹配,避免全局规则串群
         const keywords = groupRule?.keywords?.length ? groupRule.keywords : config.keywords;
         const hit = matchKeywords(keywords, text);
-        if (hit) recordKeywordHit(hit);
-        // mode=all 下默认非 @ 消息命中关键词也回；显式关闭时即便命中也不回
-        if (hit && mode === 'all' && !atBot && !policy.keywordOutsideAt.value) {
+        if (hit) recordKeywordHit(hit, trafficScope);
+        // keywordOutsideAt 对 all / at 两种模式都生效：
+        // - all：非 @ 命中关键词是否回；
+        // - at：非 @ 只有命中关键词且该开关打开时才回，否则静默。
+        const outsideAtAllowed = policy.keywordOutsideAt.value;
+        if (!atBot && mode === 'at' && !(hit && outsideAtAllowed)) {
+            if (hit) recordSkip('keyword_outside_at_off', '非@消息命中关键词，但「非@命中关键词也回」已关闭', 'rule=' + hit.match);
+            else recordSkip('not_at', '群模式=仅@，本条未 @');
+            return;
+        }
+        if (!atBot && mode === 'all' && hit && !outsideAtAllowed) {
             recordSkip('keyword_outside_at_off', '非@消息命中关键词，但「非@命中关键词也回」已关闭', 'rule=' + hit.match);
             return;
         }
@@ -269,7 +278,7 @@ export async function handleMessage(ctx: NapCatPluginContext, event: OB11Message
             detail: (out.text || (out.image ? '[图片]' : '')).slice(0, 80) +
                 ' source=' + out.source + ' mode=' + mode + ' miss=' + missPolicy,
         });
-        scheduleReply(ctx, event, { text: out.text || '', image: out.image }, '[群聊] ' + groupId + sourceTag(out.source));
+        scheduleReply(ctx, event, { text: out.text || '', image: out.image }, '[群聊] ' + groupId + sourceTag(out.source), out.source);
         return;
     }
 }
@@ -344,7 +353,7 @@ async function processPrivateMessage(ctx: NapCatPluginContext, event: OB11Messag
     // 追问中的用户消息优先作为答案消费，不再走关键词/FAQ
     if (await consumeCollectAnswer(ctx, event, collectKey('private', senderId), senderId, undefined, text, 'private')) return;
     const hit = matchKeywords(config.keywords, text);
-    if (hit) recordKeywordHit(hit);
+    if (hit) recordKeywordHit(hit, 'private');
     const plan = planReply({
         kind: 'private',
         userId: senderId,
@@ -390,7 +399,7 @@ async function processPrivateMessage(ctx: NapCatPluginContext, event: OB11Messag
         result: 'answered',
         detail: (out.text || (out.image ? '[图片]' : '')).slice(0, 80) + ' source=' + out.source,
     });
-    scheduleReply(ctx, event, { text: out.text || '', image: out.image }, '[私聊] ' + senderId + sourceTag(out.source));
+    scheduleReply(ctx, event, { text: out.text || '', image: out.image }, '[私聊] ' + senderId + sourceTag(out.source), out.source);
 }
 
 /** 规则类计划共用的冷却键；AI/兜底不占用规则冷却。seconds 由调用方按群级/全局口径传入 */
@@ -499,7 +508,7 @@ function finalizeCollect(
         collected: session.answers,
     });
     if (fallback && answerEvent && groupActive) {
-        scheduleReply(ctx, answerEvent, { text: fallback }, '[转人工] ' + session.userId);
+        scheduleReply(ctx, answerEvent, { text: fallback }, '[转人工] ' + session.userId, 'default');
     }
 }
 
@@ -738,17 +747,23 @@ function isDirectedAtBot(event: OB11Message, selfId: string): boolean {
 }
 
 /** 按配置的随机延迟安排回复,拟人化防风控;延迟为 0 时立即发送 */
-function scheduleReply(ctx: NapCatPluginContext, event: OB11Message, content: { text: string; image?: string }, logTag: string): void {
+function scheduleReply(
+    ctx: NapCatPluginContext,
+    event: OB11Message,
+    content: { text: string; image?: string },
+    logTag: string,
+    source: TrafficReplySource = 'rule',
+): void {
     const min = Math.max(0, pluginState.config.replyDelayMinMs ?? 0);
     const max = Math.max(min, pluginState.config.replyDelayMaxMs ?? min);
     const delay = min + Math.floor(Math.random() * (max - min + 1));
     if (delay <= 0) {
-        void sendReply(ctx, event, content, logTag);
+        void sendReply(ctx, event, content, logTag, source);
         return;
     }
     const timer = setTimeout(() => {
         pluginState.pendingReplies.delete(timer);
-        void sendReply(ctx, event, content, logTag);
+        void sendReply(ctx, event, content, logTag, source);
     }, delay);
     pluginState.pendingReplies.add(timer);
 }
@@ -779,6 +794,12 @@ function replyKey(event: OB11Message): string {
     return 'private:' + String(event.sender?.user_id ?? event.user_id ?? '');
 }
 
+/** 流量统计 scope：只允许 private / group:<群号> */
+function trafficScopeOf(event: OB11Message): string {
+    if (event.message_type === 'group' && event.group_id) return 'group:' + String(event.group_id);
+    return 'private';
+}
+
 /** 回复对刷防护单例：每次取用都同步最新配置，配置热更新立即生效 */
 let loopGuard: LoopGuard | null = null;
 function getLoopGuard(): LoopGuard {
@@ -800,7 +821,13 @@ function errorMessage(error: unknown): string {
  * 发送回复并记录日志。
  * 防风控：熔断冷却期内不尝试发送；QQ 侧拒绝不重试；网络/超时类 2 秒后重试一次。
  */
-async function sendReply(ctx: NapCatPluginContext, event: OB11Message, content: { text: string; image?: string }, logTag: string): Promise<void> {
+async function sendReply(
+    ctx: NapCatPluginContext,
+    event: OB11Message,
+    content: { text: string; image?: string },
+    logTag: string,
+    source: TrafficReplySource = 'rule',
+): Promise<void> {
     const isGroup = event.message_type === 'group' && !!event.group_id;
     const targetId = isGroup
         ? String(event.group_id ?? '')
@@ -850,6 +877,8 @@ async function sendReply(ctx: NapCatPluginContext, event: OB11Message, content: 
     if (result.ok) {
         guard.onSuccess(key);
         getLoopGuard().recordSend(key, content.text || '');
+        // 只统计真正发出去的回复；失败/熔断/对刷拦截都不计
+        recordTrafficReply(trafficScopeOf(event), source);
         const desc = (content.text || "") + (content.image ? " [图片]" : "");
         pluginState.logger.info(logTag + (result.attempts > 1 ? "（重试后成功）" : "") + " → " + desc.slice(0, 60));
         return;

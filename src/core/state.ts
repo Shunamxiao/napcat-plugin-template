@@ -274,6 +274,31 @@ export function sanitizeConfig(raw: unknown): PluginConfig {
     if (isObject(raw.groupRules)) {
         out.groupRules = sanitizeGroupRules(raw.groupRules);
     }
+    // 未配置群默认策略：逐字段白名单化，坏值回落默认
+    if (isObject(raw.groupDefault)) {
+        const d = raw.groupDefault;
+        const base = out.groupDefault ?? DEFAULT_CONFIG.groupDefault!;
+        const mode = d.mode === 'off' || d.mode === 'all' || d.mode === 'at' ? d.mode : base.mode;
+        const missPolicy = d.missPolicy === 'ai_then_fallback' || d.missPolicy === 'fallback_only' || d.missPolicy === 'none'
+            ? d.missPolicy
+            : base.missPolicy;
+        const cooldown = d.cooldownSeconds === null
+            ? null
+            : (typeof d.cooldownSeconds === 'number' && Number.isInteger(d.cooldownSeconds) && d.cooldownSeconds >= 0 && d.cooldownSeconds <= 3600
+                ? d.cooldownSeconds
+                : base.cooldownSeconds);
+        const fallbackText = d.fallbackText === null
+            ? null
+            : (typeof d.fallbackText === 'string' ? (d.fallbackText.trim() || null) : base.fallbackText);
+        out.groupDefault = {
+            mode,
+            missPolicy,
+            atForceReply: typeof d.atForceReply === 'boolean' ? d.atForceReply : base.atForceReply,
+            keywordOutsideAt: typeof d.keywordOutsideAt === 'boolean' ? d.keywordOutsideAt : base.keywordOutsideAt,
+            cooldownSeconds: cooldown,
+            fallbackText,
+        };
+    }
     // 文本字段始终由结构化规则推导,保证读取与持久化内容一致
     out.groupRulesText = groupRulesToText(out.groupRules);
 
@@ -586,6 +611,12 @@ class PluginState {
             }
         }
         if (partial.aiTrigger) merged.aiTrigger = { ...this.config.aiTrigger, ...partial.aiTrigger };
+        if (partial.groupDefault) {
+            merged.groupDefault = {
+                ...(this.config.groupDefault ?? DEFAULT_CONFIG.groupDefault!),
+                ...partial.groupDefault,
+            };
+        }
         if (partial.blocklist) {
             merged.blocklist = {
                 ...this.config.blocklist,

@@ -9,6 +9,7 @@
 import fs from 'fs';
 import path from 'path';
 import { pluginState } from './state';
+import { recordTrafficRuleHit } from './traffic-stats';
 import type { KeywordRule } from '../types';
 
 export interface KeywordStatEntry {
@@ -108,8 +109,11 @@ export function initKeywordStats(filePath: string, intervalMs = DEFAULT_FLUSH_IN
     }
 }
 
-/** 命中一次：内存累加并标记 dirty，窗口内合并落盘 */
-export function recordKeywordHit(rule: Pick<KeywordRule, 'match' | 'matchType'>): void {
+/**
+ * 命中一次：内存累加并标记 dirty，窗口内合并落盘。
+ * scope 非空时同步累加流量统计的 ruleHits —— 两套口径必须同点计数。
+ */
+export function recordKeywordHit(rule: Pick<KeywordRule, 'match' | 'matchType'>, scope?: string): void {
     const key = keywordStatKey(rule);
     if (key === '|contains') return;
     const prev = stats[key];
@@ -117,6 +121,7 @@ export function recordKeywordHit(rule: Pick<KeywordRule, 'match' | 'matchType'>)
         count: (prev?.count ?? 0) + 1,
         lastAt: new Date().toISOString(),
     };
+    if (scope) recordTrafficRuleHit(scope);
     dirty = true;
     scheduleFlush();
 }

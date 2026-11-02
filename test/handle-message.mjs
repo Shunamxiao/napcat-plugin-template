@@ -320,15 +320,16 @@ assert.equal(outbox.length, before + 1, "AI 无答案时回兜底");
 assert.equal(textOf(outbox[outbox.length - 1]), "群@兜底话术");
 console.log("ok 9 - 未 @ 未命中问服务后回兜底");
 
-// 10) 未配置群 @ → 静默
+// 10) 未配置群 @ 未命中 → 走群默认（at + none + atForceReply）回兜底
 before = outbox.length;
 await handleMessage(ctx, realEvent({
   group_id: 480563774,
   message_id: RUN + "-real-1816586552",
 }));
 await wait(100);
-assert.equal(outbox.length, before, "未配置群 @ 应静默");
-console.log("ok 10 - 未配置群 @ 静默");
+assert.equal(outbox.length, before + 1, "未配置群 @ 未命中应按群默认回兜底");
+assert.equal(textOf(outbox[outbox.length - 1]), "群@兜底话术");
+console.log("ok 10 - 未配置群 @ 按群默认回兜底");
 
 // 11) 适配器把 message 下发成 CQ 字符串时，@ 判定仍生效
 before = outbox.length;

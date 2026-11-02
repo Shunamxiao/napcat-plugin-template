@@ -2,15 +2,17 @@
  * 群级生效口径解析（纯函数）
  *
  * 规则：
- * - 只有出现在 groupRules 里的群才处理（服务端有条目时由 group-config 负责）。
+ * - 服务端有该群条目 → 用服务端（由 group-config 负责）；
+ * - 否则本地 groupRules 有该群 → 用本地；
+ * - 都没有 → 用全局 groupDefault（不再一律静默）。
  * - 新口径是 { mode, missPolicy, atForceReply, keywordOutsideAt } 四项；本地老配置
  *   （enabled / atOnly / aiEnabled）按固定规则映射，服务端条目优先。
  * - 兜底话术同样按字段覆盖，null/缺省跟随全局。
  */
 
-import type { FallbackConfig, GroupMode, GroupRule, MissPolicy, PluginConfig } from '../types';
+import type { FallbackConfig, GroupDefaultConfig, GroupMode, GroupRule, MissPolicy, PluginConfig } from '../types';
 
-export type PolicySource = 'group' | 'global' | 'server';
+export type PolicySource = 'group' | 'global' | 'server' | 'default';
 
 export interface PolicyValue<T> {
     value: T;
@@ -29,6 +31,16 @@ export interface GroupPolicy {
 export const DEFAULT_AT_FORCE_REPLY = true;
 export const DEFAULT_KEYWORD_OUTSIDE_AT = true;
 
+/** 未配置群的默认策略：防刷口径（at + 关键词命中才回，未命中不回） */
+export const DEFAULT_GROUP_DEFAULT: GroupDefaultConfig = {
+    mode: 'at',
+    missPolicy: 'none',
+    atForceReply: true,
+    keywordOutsideAt: true,
+    cooldownSeconds: null,
+    fallbackText: null,
+};
+
 /** 老配置 enabled/atOnly → 新枚举（服务端迁移与插件本地映射共用同一口径） */
 export function legacyGroupMode(enabled: boolean, atOnly: boolean): GroupMode {
     if (!enabled) return 'off';
@@ -45,7 +57,7 @@ export function isGroupConfigured(config: PluginConfig, groupId: string): boolea
     return config.groupRules?.[groupId] !== undefined;
 }
 
-/** 某群的生效口径；未配置的群按全局默认给出（调用方仍需先判断是否已配置） */
+/** 已配置群的生效口径；未配置的群请用 resolveGroupDefaultPolicy */
 export function resolveGroupPolicy(config: PluginConfig, groupId: string): GroupPolicy {
     const rule: GroupRule | undefined = config.groupRules?.[groupId];
 
@@ -69,6 +81,17 @@ export function resolveGroupPolicy(config: PluginConfig, groupId: string): Group
         missPolicy: { value: legacyMissPolicy(aiEnabled), source: missFromGroup ? 'group' : 'global' },
         atForceReply: { value: DEFAULT_AT_FORCE_REPLY, source: 'global' },
         keywordOutsideAt: { value: DEFAULT_KEYWORD_OUTSIDE_AT, source: 'global' },
+    };
+}
+
+/** 未配置群（服务端无条目、本地 groupRules 也没有）的生效口径 */
+export function resolveGroupDefaultPolicy(config: PluginConfig): GroupPolicy {
+    const d = config.groupDefault ?? DEFAULT_GROUP_DEFAULT;
+    return {
+        mode: { value: d.mode, source: 'default' },
+        missPolicy: { value: d.missPolicy, source: 'default' },
+        atForceReply: { value: d.atForceReply, source: 'default' },
+        keywordOutsideAt: { value: d.keywordOutsideAt, source: 'default' },
     };
 }
 

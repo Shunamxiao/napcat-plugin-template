@@ -4,6 +4,7 @@
 
 import type { NapCatPluginContext, PluginConfigSchema } from 'napcat-types/napcat-onebot/network/plugin/types';
 import type { GroupRule, KeywordRule, PluginConfig } from './types';
+import { DEFAULT_GROUP_DEFAULT } from './core/policy';
 
 
 /** 规则数组 → 多行文本(每行: 匹配词|类型|回复|图片(可选)|ai(可选)|动作(可选)|off(可选))；多回复池只在扩展配置页维护 */
@@ -99,6 +100,7 @@ export const DEFAULT_CONFIG: PluginConfig = {
     },
     groupConfigs: {},
     groupRules: {},
+    groupDefault: { ...DEFAULT_GROUP_DEFAULT },
     keywords: [
         { match: "有", matchType: "prefix", reply: "群里没有找到吗，先直接去https://apks.cc搜索下载下，这个是群里小伙伴给我的，下载后使用uu安装更新都行" },
         { match: "下载", reply: "群里没有找到吗，先直接去https://apks.cc搜索下载下，这个是群里小伙伴给我的，下载后使用uu安装更新都行" },
@@ -142,15 +144,47 @@ export function textToLines(text: string | undefined): string[] {
         .filter(Boolean);
 }
 
-export function buildConfigSchema(ctx: NapCatPluginContext): PluginConfigSchema {
+/** 原生扩展页降级说明：React 插件页是唯一编辑入口 */
+const MIGRATED_HINT = '完整配置请打开 插件页 → 设置 → 私聊与关键词/群规则。';
+const MIGRATED_TITLE = '[已迁移] ';
+
+/** 原生页只读摘要（模式分布 / 关键词条数 / 上次同步时间） */
+export interface ConfigSchemaSummary {
+    groupModes: { all: number; at: number; off: number };
+    keywordCount: number;
+    lastSyncAt: string | null;
+}
+
+function migrated(description: string): string {
+    return MIGRATED_HINT + description;
+}
+
+function buildSummaryField(ctx: NapCatPluginContext, summary?: ConfigSchemaSummary): string {
+    const modes = summary?.groupModes ?? { all: 0, at: 0, off: 0 };
+    const keywordCount = summary?.keywordCount ?? DEFAULT_CONFIG.keywords.length;
+    const lastSync = summary?.lastSyncAt ?? '尚未同步';
+    const pageUrl = '/plugin/' + encodeURIComponent(ctx.pluginName) + '/page/settings';
+    return (
+        '<div style="padding:12px 14px;background:#f0f7ff;border:1px solid #bfdbfe;border-radius:10px;margin:8px 0 16px;font-size:13px;line-height:1.7;color:#1e3a5f;">' +
+        '<div style="font-weight:600;margin-bottom:4px;">配置摘要（只读）</div>' +
+        '<div>群模式：响应所有 <b>' + modes.all + '</b> · 仅 @ <b>' + modes.at + '</b> · 关闭 <b>' + modes.off + '</b></div>' +
+        '<div>关键词：<b>' + keywordCount + '</b> 条</div>' +
+        '<div>上次同步：' + lastSync + '</div>' +
+        '<div style="margin-top:6px;">' + MIGRATED_HINT + ' <a href="' + pageUrl + '" target="_blank" style="color:#2563eb;">打开插件页 →</a></div>' +
+        '</div>'
+    );
+}
+
+export function buildConfigSchema(ctx: NapCatPluginContext, summary?: ConfigSchemaSummary): PluginConfigSchema {
     return ctx.NapCatConfig.combine(
         ctx.NapCatConfig.html('<div style="padding:16px;background:linear-gradient(135deg,#667eea,#764ba2);border-radius:12px;margin-bottom:20px;color:white;"><h3 style="margin:0 0 6px 0;font-size:18px;font-weight:600;">QQ 自动回复</h3><p style="margin:0;font-size:13px;opacity:0.85;">关键词触发 · 私聊/群聊 · 规则热重载</p></div>'),
+        ctx.NapCatConfig.html(buildSummaryField(ctx, summary)),
         ctx.NapCatConfig.boolean('enabled', '启用自动回复', true, '总开关'),
         ctx.NapCatConfig.html('<div style="margin:12px 0 4px;font-weight:600;font-size:14px;">私聊设置</div>'),
         ctx.NapCatConfig.boolean('private.enabled', '私聊自动回复', false, '开启后私聊消息触发自动回复'),
         ctx.NapCatConfig.number('private.mergeWindowMs', '私聊连发合并窗口(毫秒)', 3000, '同一私聊用户在窗口内连发的消息合并成一次问答（换行拼接，最多 5 条）；0 = 关闭'),
         ctx.NapCatConfig.html('<div style="margin:12px 0 4px;font-weight:600;font-size:14px;">关键词规则</div>'),
-        ctx.NapCatConfig.text('keywordsText', '关键词规则列表', keywordsToText(DEFAULT_CONFIG.keywords), '每行一条:匹配词|类型|回复|图片URL或路径(第4段可选)|ai(第5段可选)|动作(第6段可选:reply/ai/human)|off(第7段可选:停用该规则)。类型 prefix/contains/regex。图片只支持 jpg/png/webp/gif，建议 CDN 直链，小图可用 base64://'),
+        ctx.NapCatConfig.text('keywordsText', MIGRATED_TITLE + '关键词规则列表', keywordsToText(DEFAULT_CONFIG.keywords), migrated('每行一条:匹配词|类型|回复|图片URL或路径(第4段可选)|ai(第5段可选)|动作(第6段可选:reply/ai/human)|off(第7段可选:停用该规则)。类型 prefix/contains/regex。图片只支持 jpg/png/webp/gif，建议 CDN 直链，小图可用 base64://')),
         ctx.NapCatConfig.html('<div style="margin:12px 0 4px;font-weight:600;font-size:14px;">群聊设置</div>'),
         ctx.NapCatConfig.boolean('group.enabled', '群聊自动回复', true, '开启后群聊消息触发自动回复'),
         ctx.NapCatConfig.boolean('debug', '调试模式', false, '输出详细日志'),
@@ -159,31 +193,31 @@ export function buildConfigSchema(ctx: NapCatPluginContext): PluginConfigSchema 
         ctx.NapCatConfig.number('replyDelayMinMs', '回复延迟下限(毫秒)', 300, '回复前随机延迟下限,拟人化行为,降低风控风险'),
         ctx.NapCatConfig.number('replyDelayMaxMs', '回复延迟上限(毫秒)', 1200, '回复前随机延迟上限,需大于等于下限'),
         ctx.NapCatConfig.boolean('atOnly', '群聊仅被 @ 时回复', false, '开启后群聊只有 @ 机器人的消息才会触发自动回复'),
-        ctx.NapCatConfig.text('groupRulesText', '群级规则(JSON)', groupRulesToText(DEFAULT_CONFIG.groupRules), 'JSON 对象，键为群号；只有列在这里的群才会被处理，未列出的群一律静默。值 {enabled,atOnly,aiEnabled,welcome:{enabled,template},fallback:{privateText,groupAtText},keywords:[{match,matchType,reply,replies?,action?}]}。enabled=false 该群不回复；atOnly 覆盖全局；welcome/fallback 的字段为 null 或缺省时跟随全局；keywords 非空时替代全局关键词。action=reply(默认)回文案、ai=直接问服务、human=转人工。格式错误将被忽略'),
+        ctx.NapCatConfig.text('groupRulesText', MIGRATED_TITLE + '群级规则(JSON)', groupRulesToText(DEFAULT_CONFIG.groupRules), migrated('JSON 对象，键为群号；未在服务端与这里配置的群走「群默认（未配置群）」策略。值 {enabled,atOnly,aiEnabled,welcome:{enabled,template},fallback:{privateText,groupAtText},keywords:[{match,matchType,reply,replies?,action?}]}。enabled=false 该群不回复；atOnly 覆盖全局；welcome/fallback 的字段为 null 或缺省时跟随全局；keywords 非空时替代全局关键词。action=reply(默认)回文案、ai=直接问服务、human=转人工。格式错误将被忽略')),
         ctx.NapCatConfig.html('<div style="margin:12px 0 4px;font-weight:600;font-size:14px;">机器人能力</div>'),
         ctx.NapCatConfig.boolean('atReply', '群聊回复时 @ 触发者', false, '开启后群聊自动回复会在消息前 @ 触发者；私聊不受影响'),
         ctx.NapCatConfig.boolean('groupWelcome.enabled', '入群欢迎', false, '新成员入群时发送欢迎语；独立于自动回复总开关'),
-        ctx.NapCatConfig.text('groupWelcome.template', '入群欢迎模板', DEFAULT_CONFIG.groupWelcome?.template ?? '', '支持 {group_id} 和 {user_id} 占位符'),
+        ctx.NapCatConfig.text('groupWelcome.template', MIGRATED_TITLE + '入群欢迎模板', DEFAULT_CONFIG.groupWelcome?.template ?? '', migrated('支持 {group_id} 和 {user_id} 占位符')),
         ctx.NapCatConfig.number('sendGuard.failThreshold', '群发送失败熔断阈值(次)', 3, '同一群连续发送失败达到该次数即进入冷却，期间不再尝试发送（默认 3）'),
         ctx.NapCatConfig.number('sendGuard.privateFailThreshold', '私聊发送失败熔断阈值(次)', 5, '同一用户私聊连续发送失败达到该次数即进入冷却（默认 5）'),
         ctx.NapCatConfig.number('sendGuard.cooldownSeconds', '熔断冷却(秒)', 600, '熔断后暂停发送的时长，到期自动恢复（默认 600）'),
-        ctx.NapCatConfig.text('ignoreSendersText', '忽略的发送者', idListToText(DEFAULT_CONFIG.ignoreSenders), '每行一个 QQ 号,# 开头为注释。两个机器人同群时填彼此的号，命中直接丢弃（不记冷却、不回复）'),
+        ctx.NapCatConfig.text('ignoreSendersText', MIGRATED_TITLE + '忽略的发送者', idListToText(DEFAULT_CONFIG.ignoreSenders), migrated('每行一个 QQ 号,# 开头为注释。两个机器人同群时填彼此的号，命中直接丢弃（不记冷却、不回复）')),
         ctx.NapCatConfig.number('loopGuard.maxReplies', '对刷熔断阈值(条)', 5, '同一群在统计窗口内发出回复达到该条数即暂停该群（默认 5）'),
         ctx.NapCatConfig.number('loopGuard.windowSeconds', '对刷统计窗口(秒)', 60, '对刷熔断的统计窗口（默认 60）'),
         ctx.NapCatConfig.number('loopGuard.pauseSeconds', '对刷暂停时长(秒)', 300, '达到阈值后该群暂停发送的时长（默认 300）'),
         ctx.NapCatConfig.boolean('guard.enabled', '群内容守卫', false, '群消息命中屏蔽词时自动撤回；只处理群消息，不踢人、不禁言'),
-        ctx.NapCatConfig.text('guard.groupIdsText', '守卫生效群号', idListToText(DEFAULT_CONFIG.guard.groupIds), '每行一个群号；留空 = 所有已启用自动回复的群'),
-        ctx.NapCatConfig.text('guard.wordsText', '守卫屏蔽词', idListToText(DEFAULT_CONFIG.guard.words), '每行一个词，大小写不敏感；留空 = 不撤回任何消息'),
-        ctx.NapCatConfig.text('guard.action', '守卫命中动作', DEFAULT_CONFIG.guard.action, 'recall(仅撤回) / warn(仅警告) / both(撤回并警告)'),
-        ctx.NapCatConfig.text('guard.warnText', '守卫警告话术', DEFAULT_CONFIG.guard.warnText, 'action=warn/both 时发到群里的提示语'),
+        ctx.NapCatConfig.text('guard.groupIdsText', MIGRATED_TITLE + '守卫生效群号', idListToText(DEFAULT_CONFIG.guard.groupIds), migrated('每行一个群号；留空 = 所有已启用自动回复的群')),
+        ctx.NapCatConfig.text('guard.wordsText', MIGRATED_TITLE + '守卫屏蔽词', idListToText(DEFAULT_CONFIG.guard.words), migrated('每行一个词，大小写不敏感；留空 = 不撤回任何消息')),
+        ctx.NapCatConfig.text('guard.action', MIGRATED_TITLE + '守卫命中动作', DEFAULT_CONFIG.guard.action, migrated('recall(仅撤回) / warn(仅警告) / both(撤回并警告)')),
+        ctx.NapCatConfig.text('guard.warnText', MIGRATED_TITLE + '守卫警告话术', DEFAULT_CONFIG.guard.warnText, migrated('action=warn/both 时发到群里的提示语')),
         ctx.NapCatConfig.number('guard.wordsRefreshMs', '守卫词表刷新间隔(毫秒)', DEFAULT_CONFIG.guard.wordsRefreshMs, '从服务 /blocklist 拉取 words 的间隔，默认 300000（5 分钟）；本地词表始终叠加生效'),
         ctx.NapCatConfig.number('groupConfigRefreshMs', '服务端群配置刷新间隔(毫秒)', DEFAULT_CONFIG.groupConfigRefreshMs ?? 300000, '从服务 /config/groups 拉取群规则与处罚策略的间隔，默认 300000（5 分钟）；拉取失败沿用上次缓存'),
-        ctx.NapCatConfig.text('fallback.privateText', '私聊兜底话术', DEFAULT_CONFIG.fallback.privateText, '私聊未命中关键词/FAQ 时必回这句；留空 = 不回'),
-        ctx.NapCatConfig.text('fallback.groupAtText', '群内 @ 兜底话术', DEFAULT_CONFIG.fallback.groupAtText, '群内被 @ 但未命中关键词/FAQ 时必回这句；留空 = 不回'),
+        ctx.NapCatConfig.text('fallback.privateText', MIGRATED_TITLE + '私聊兜底话术', DEFAULT_CONFIG.fallback.privateText, migrated('私聊未命中关键词/FAQ 时必回这句；留空 = 不回')),
+        ctx.NapCatConfig.text('fallback.groupAtText', MIGRATED_TITLE + '群内 @ 兜底话术', DEFAULT_CONFIG.fallback.groupAtText, migrated('群内被 @ 但未命中关键词/FAQ 时必回这句；留空 = 不回')),
         ctx.NapCatConfig.boolean('collect.enabled', '转人工追问', false, '关键词动作=转人工时：关闭=直接回兜底；开启=按配置问题逐条追问，5 分钟未答按超时处理'),
         ctx.NapCatConfig.boolean('friendRequest.autoAccept', '自动通过好友申请', false, '高风险：开启后所有好友申请都会被自动同意，建议仅在小号使用'),
-        ctx.NapCatConfig.text('private.whitelistText', '私聊白名单', idListToText(DEFAULT_CONFIG.private.whitelist), '每行一个 QQ 号,# 开头为注释。留空 = 对所有私聊生效;非空 = 仅名单内用户触发'),
-        ctx.NapCatConfig.text('group.whitelistText', '群聊白名单(群号)', idListToText(DEFAULT_CONFIG.group.whitelist), '每行一个群号,# 开头为注释。留空 = 对所有群生效;非空 = 仅名单内群触发'),
-        ctx.NapCatConfig.text('blacklistText', '黑名单', idListToText(DEFAULT_CONFIG.blacklist), '每行一个 QQ 号,# 开头为注释。名单内的用户不会触发任何自动回复'),
+        ctx.NapCatConfig.text('private.whitelistText', MIGRATED_TITLE + '私聊白名单', idListToText(DEFAULT_CONFIG.private.whitelist), migrated('每行一个 QQ 号,# 开头为注释。留空 = 对所有私聊生效;非空 = 仅名单内用户触发')),
+        ctx.NapCatConfig.text('group.whitelistText', MIGRATED_TITLE + '群聊白名单(群号)', idListToText(DEFAULT_CONFIG.group.whitelist), migrated('每行一个群号,# 开头为注释。留空 = 对所有群生效;非空 = 仅名单内群触发')),
+        ctx.NapCatConfig.text('blacklistText', MIGRATED_TITLE + '黑名单', idListToText(DEFAULT_CONFIG.blacklist), migrated('每行一个 QQ 号,# 开头为注释。名单内的用户不会触发任何自动回复')),
     );
 }

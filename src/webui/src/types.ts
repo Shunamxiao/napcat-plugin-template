@@ -111,12 +111,23 @@ export interface GroupRuleEntry {
     source: 'server' | 'local' | 'default'
 }
 
+/** 未配置群（服务端无条目、本地 groupRules 也没有）的默认策略 */
+export interface GroupDefaultView {
+    mode: GroupMode
+    missPolicy: MissPolicy
+    atForceReply: boolean
+    keywordOutsideAt: boolean
+    cooldownSeconds: number | null
+    fallbackText: string | null
+}
+
 /** /api/groups 响应：群列表 + 全局默认值（页面展示「跟随全局」用） */
 export interface GroupsResponse {
     groups: GroupRuleEntry[]
     global: {
         cooldownSeconds: number
         fallbackText: string
+        groupDefault?: GroupDefaultView | null
     }
 }
 

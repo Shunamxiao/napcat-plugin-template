@@ -424,3 +424,41 @@ export async function reportKeywordStats(
     );
     return isObject(data);
 }
+
+/** 流量桶上报条目：字段名与服务端逐字一致（"in" 是保留字，必须带引号） */
+export interface TrafficReportItem {
+    bucket: string;
+    scope: string;
+    in: number;
+    replies: number;
+    ruleHits: number;
+    aiReplies: number;
+    fallbackReplies: number;
+    users: number;
+}
+
+export interface TrafficReportPayload {
+    items: TrafficReportItem[];
+}
+
+/**
+ * 上报流量统计（POST /stats/traffic，x-bot-token）。
+ * 返回 true 只代表服务端 2xx 且响应是 JSON；网络失败/超时一律 false，绝不抛错。
+ */
+export async function reportTrafficStats(
+    cfg: KbServiceConfig,
+    payload: TrafficReportPayload,
+    fetchImpl: FetchLike = fetch,
+): Promise<boolean> {
+    const data = await requestJson(
+        cfg,
+        '/stats/traffic',
+        {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', 'x-bot-token': String(cfg.token || '') },
+            body: JSON.stringify(payload),
+        },
+        fetchImpl,
+    );
+    return isObject(data);
+}

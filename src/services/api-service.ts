@@ -24,7 +24,7 @@ import type {
 import { timingSafeEqual } from 'crypto';
 import { maskConfig, pluginState } from '../core/state';
 import { startGuardWordsSync } from '../core/guard-words';
-import { startGroupConfigSync, buildEffectiveGroupPolicies, getGroupConfigStatus, getServerGroup, getServerGroupConfigs, getServerGuardPolicy, resolveEffectiveGroupFallback, resolveEffectiveGroupPolicy, resolveGroupWelcome, resolveGuardPolicy, applyServerGroupEntry, applyServerGuardPolicy } from '../core/group-config';
+import { startGroupConfigSync, buildEffectiveGroupPolicies, getGroupConfigStatus, getServerGroup, getServerGroupConfigs, getServerGuardPolicy, resolveEffectiveGroupPolicy, resolveGroupWelcome, resolveGuardPolicy, applyServerGroupEntry, applyServerGuardPolicy } from '../core/group-config';
 import { hitLog } from '../core/hit-log';
 import { resetKeywordStats, snapshotKeywordStats } from '../core/keyword-stats';
 import { putServerGroup, putServerGuardPolicy, type GroupPatch } from './admin-client';
@@ -158,20 +158,21 @@ export function registerApiRoutes(ctx: NapCatPluginContext): void {
 
     // ==================== 群规则 / 守卫策略 / 观测（无鉴权）====================
 
-    /** 群条目：服务端配置优先，其次本地群规则，最后默认值 */
+    /** 群条目：服务端配置优先，其次本地群规则，最后 groupDefault */
     function toGroupEntry(groupId: string, name: string) {
         const server = getServerGroup(groupId);
+        const configured = pluginState.config.groupRules?.[groupId] !== undefined;
         const policy = resolveEffectiveGroupPolicy(pluginState.config, groupId);
         const welcome = resolveGroupWelcome(pluginState.config, groupId);
-        const mode = policy?.mode.value ?? 'off';
-        const missPolicy = policy?.missPolicy.value ?? 'fallback_only';
+        const mode = policy.mode.value;
+        const missPolicy = policy.missPolicy.value;
         return {
             groupId,
             name,
             mode,
             missPolicy,
-            atForceReply: policy?.atForceReply.value ?? true,
-            keywordOutsideAt: policy?.keywordOutsideAt.value ?? true,
+            atForceReply: policy.atForceReply.value,
+            keywordOutsideAt: policy.keywordOutsideAt.value,
             // 群级覆盖原样回显（null = 跟随全局），避免把全局值误存回服务端
             cooldownSeconds: server?.cooldownSeconds ?? null,
             fallbackText: server?.fallbackText ?? null,
@@ -182,7 +183,7 @@ export function registerApiRoutes(ctx: NapCatPluginContext): void {
             welcomeEnabled: welcome.enabled,
             // 服务端条目回显它自己的模板（空 = 跟随全局），避免把全局文案误存回服务端
             welcomeTemplate: server ? server.welcomeTemplate : (welcome.template || null),
-            source: server ? 'server' : (policy ? 'local' : 'default'),
+            source: server ? 'server' : (configured ? 'local' : 'default'),
         };
     }
 
@@ -327,7 +328,10 @@ export function registerApiRoutes(ctx: NapCatPluginContext): void {
                 // 页面里「留空 = 跟随全局」要展示当前全局值
                 global: {
                     cooldownSeconds: pluginState.config.cooldownSeconds ?? 0,
-                    fallbackText: resolveEffectiveGroupFallback(pluginState.config, ''),
+                    // 全局区只显示全局兜底；groupDefault.fallbackText 只在「群默认」卡片展示
+                    fallbackText: pluginState.config.fallback?.groupAtText ?? '',
+                    // 未配置群默认策略：页面「群默认」卡片回显用
+                    groupDefault: pluginState.config.groupDefault ?? null,
                 },
             },
         });
