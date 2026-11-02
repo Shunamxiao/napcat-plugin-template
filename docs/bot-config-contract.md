@@ -78,6 +78,7 @@ CREATE TABLE IF NOT EXISTS bot_config (
 - 插件配置新增可选字段 `accountAccessKey`（string，默认 `""`），env `QQBOT_ACCOUNT_ACCESS_KEY` 作为兜底来源；
 - 转发 URL 追加 `?key=<accountAccessKey>`（有值才带）；未配置时仍裸转发（会得到空 peers，不报错）；
 - `accountAccessKey` 只在插件后端使用，绝不进 `/api/*` 出口与日志。
+- **端口解析（总监补充 2026-11-02）**：`/api/peers` 与 `/api/status.webuiPort` 以实例真实 WebUI 端口为准——读插件 configPath 同目录的 `webui.json` 的 `port`；请求 Host 头端口只作回退（经 SSH 隧道访问时 Host 端口是隧道口，不能代表实例端口，转发拨号必须拨真实端口）。
 
 ### 2.6 兼容
 

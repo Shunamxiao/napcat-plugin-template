@@ -22,6 +22,8 @@ import type {
     PluginHttpResponse
 } from 'napcat-types/napcat-onebot/network/plugin/types';
 import { timingSafeEqual } from 'crypto';
+import fs from 'fs';
+import path from 'path';
 import { applyConfigPatch, maskConfig, pluginState, sanitizeConfig } from '../core/state';
 import { startGuardWordsSync } from '../core/guard-words';
 import { startGroupConfigSync, buildEffectiveGroupPolicies, getGroupConfigStatus, getServerGroup, getServerGroupConfigs, getServerGuardPolicy, resolveEffectiveGroupPolicy, resolveGroupWelcome, resolveGuardPolicy, applyServerGroupEntry, applyServerGuardPolicy } from '../core/group-config';
@@ -54,7 +56,7 @@ interface PeerInfo {
     isLogin: boolean;
 }
 
-/** 从请求 Host 头解析本实例 WebUI 端口；没有端口（反代/Unix socket）回退 null */
+/** 从请求 Host 头解析端口；没有端口（反代/Unix socket）回退 null */
 function portFromHost(req: PluginHttpRequest): number | null {
     const host = req.headers?.host;
     const raw = Array.isArray(host) ? host[0] ?? '' : host ?? '';
@@ -62,6 +64,21 @@ function portFromHost(req: PluginHttpRequest): number | null {
     if (!m) return null;
     const port = Number(m[1]);
     return Number.isInteger(port) && port > 0 && port <= 65535 ? port : null;
+}
+
+/**
+ * 实例真实 WebUI 端口（契约 §2.5 端口解析）：读 configPath 同目录上一级的 webui.json 的 port。
+ * 经 SSH 隧道访问时请求 Host 端口是隧道口而非实例口，转发拨号必须拨真实端口；
+ * webui.json 缺文件/坏 JSON/无合法 port 时回退 Host 头端口。每次重读，小 JSON 代价可忽略。
+ */
+function resolveWebuiPort(ctx: NapCatPluginContext, req: PluginHttpRequest): number | null {
+    try {
+        const file = path.resolve(path.dirname(ctx.configPath), '..', 'webui.json');
+        const raw = JSON.parse(fs.readFileSync(file, 'utf-8')) as { port?: unknown };
+        const port = Number(raw?.port);
+        if (Number.isInteger(port) && port > 0 && port <= 65535) return port;
+    } catch { /* 回退 Host 头端口 */ }
+    return portFromHost(req);
 }
 
 /** 账号插件实例列表缓存（按端口）：/status 每 10 秒被页面轮询，回源别跟着打满 */
@@ -85,8 +102,8 @@ function resolveAccountAccessKey(): string {
  * 只回源到本机回环地址的 WebUI 端口（从请求 Host 头解析），失败/超时一律空列表，绝不抛异常。
  * 账号插件校验 ?key=<accessKey>：配置了 accountAccessKey 才带上，未配置时裸转发（会得到空 peers）。
  */
-async function fetchPeers(req: PluginHttpRequest): Promise<PeerInfo[]> {
-    const port = portFromHost(req);
+async function fetchPeers(ctx: NapCatPluginContext, req: PluginHttpRequest): Promise<PeerInfo[]> {
+    const port = resolveWebuiPort(ctx, req);
     if (!port) return [];
     const now = Date.now();
     const cached = peersCache.get(port);
@@ -153,7 +170,7 @@ export function registerApiRoutes(ctx: NapCatPluginContext): void {
         if (!nickname) nickname = botStatus.serverNickname;
         // 实例名：账号管理插件里按 uin 匹配的 name，匹配不到回退 ""
         const selfId = pluginState.selfId;
-        const peers = await fetchPeers(req);
+        const peers = await fetchPeers(ctx, req);
         const selfPeer = selfId ? peers.find((p) => p.uin === selfId) : undefined;
         res.json({
             code: 0,
@@ -166,7 +183,7 @@ export function registerApiRoutes(ctx: NapCatPluginContext): void {
                 selfId: selfId || null,
                 nickname,
                 instanceName: selfPeer?.name ?? '',
-                webuiPort: portFromHost(req),
+                webuiPort: resolveWebuiPort(ctx, req),
                 configRevision: botStatus.revision,
                 configSource: botStatus.source,
             },
@@ -177,7 +194,7 @@ export function registerApiRoutes(ctx: NapCatPluginContext): void {
 
     /** 同进程账号管理插件实例列表；失败回 {peers:[]}（契约 §2.5） */
     router.getNoAuth('/peers', async (req, res) => {
-        const peers = await fetchPeers(req);
+        const peers = await fetchPeers(ctx, req);
         res.json({ code: 0, data: { peers } });
     });
 

@@ -10,6 +10,7 @@
  *   6) /api/peers 转发鉴权（带 key 成功 / 无 key 空列表 / env 兜底 / key 不进出口）
  *      与 /api/status 六个新字段
  *   7) startServerConfigSync / stopServerConfigSync 生命周期无 ReferenceError
+ *   8) 端口解析：webui.json 的 port 优先于 Host 头端口（SSH 隧道场景拨真实端口）
  *
  * 用法：先 pnpm build，再 node --test test/*.mjs
  */
@@ -31,7 +32,9 @@ const SELF = "1457278554";
 const TOKEN = "realsecret";
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "autoreply-bot-config-"));
-const configPath = path.join(dir, "config.json");
+// 真实布局：configPath 在 <插件目录>/config/ 下，webui.json 在其上一级（<插件目录>/webui.json）
+fs.mkdirSync(path.join(dir, "config"), { recursive: true });
+const configPath = path.join(dir, "config", "config.json");
 const baseConfig = {
     enabled: true,
     cooldownSeconds: 0,
@@ -340,6 +343,27 @@ assert.ok(
     "startServerConfigSync 应完整走导入+首轮同步流程（fetch 失败仅记 warn 不抛）",
 );
 console.log("ok 7 - startServerConfigSync/stopServerConfigSync 生命周期无 ReferenceError");
+
+// ---------- 8) 端口解析：webui.json 优先于 Host 头端口（SSH 隧道场景） ----------
+fs.writeFileSync(path.join(dir, "webui.json"), JSON.stringify({ port: 7777, token: "x" }));
+globalThis.fetch = async (url) => {
+    const u = String(url);
+    if (u.includes("/plugin/napcat-plugin-account/api/instances")) {
+        lastInstancesUrl = u;
+        // 只认可拨到 7777（webui.json 端口）；拨 Host 隧道口 16099 视为插件不在
+        if (!u.includes("127.0.0.1:7777/")) throw new TypeError("fetch failed（该端口无账号插件）");
+        return jsonRes(ACCOUNT_INSTANCES);
+    }
+    throw new TypeError("fetch failed");
+};
+const peersTunnel = await call("GET /peers", { headers: { host: "127.0.0.1:16099" } });
+assert.equal(peersTunnel.body.data.peers.length, 1, "隧道 Host 下转发应拨 webui.json 端口");
+assert.ok(lastInstancesUrl.includes("127.0.0.1:7777/"), "拨号端口应取 webui.json 的 port 而非 Host 端口 16099");
+const statusTunnel = await call("GET /status", { headers: { host: "192.168.1.204:16099" } });
+assert.equal(statusTunnel.body.data.webuiPort, 7777, "status.webuiPort 应为 webui.json 端口");
+assert.equal(statusTunnel.body.data.instanceName, "acc-main", "隧道场景 instanceName 仍应按 uin 匹配成功");
+fs.rmSync(path.join(dir, "webui.json"));
+console.log("ok 8 - webui.json 端口优先于 Host 头端口");
 
 // ---------- 清理 ----------
 stopServerConfigSync();
