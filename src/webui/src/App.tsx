@@ -6,13 +6,15 @@ import GroupRulesPage from './pages/GroupRulesPage'
 import GuardPage from './pages/GuardPage'
 import ServicePage from './pages/ServicePage'
 import LogsPage from './pages/LogsPage'
+import PrivateKeywordsPage from './pages/PrivateKeywordsPage'
 import { useStatus } from './hooks/useStatus'
 import { useTheme } from './hooks/useTheme'
 
-export type PageId = 'basic' | 'groups' | 'guard' | 'service' | 'logs'
+export type PageId = 'basic' | 'private' | 'groups' | 'guard' | 'service' | 'logs'
 
 const pageConfig: Record<PageId, { title: string; desc: string }> = {
     basic: { title: '基础回复', desc: '总开关、冷却与回复延迟' },
+    private: { title: '私聊与关键词', desc: '私聊开关、白名单、AI 兜底、关键词规则与黑名单' },
     groups: { title: '群规则', desc: '每群启用 / 仅@ / AI / 入群欢迎，服务端为准' },
     guard: { title: '守卫与处罚', desc: '屏蔽词、命中动作与禁言策略' },
     service: { title: '服务与观测', desc: '服务连通、同步时间与 FAQ 命中计数' },
@@ -21,6 +23,7 @@ const pageConfig: Record<PageId, { title: string; desc: string }> = {
 
 const tabs: { id: PageId; label: string }[] = [
     { id: 'basic', label: '基础回复' },
+    { id: 'private', label: '私聊与关键词' },
     { id: 'groups', label: '群规则' },
     { id: 'guard', label: '守卫与处罚' },
     { id: 'service', label: '服务与观测' },
@@ -86,8 +89,14 @@ function App() {
                 </div>
 
                 <div className="px-4 md:px-8 pt-5 pb-8">
-                    <div key={currentPage} className="page-enter">
-                        {renderPage()}
+                    {currentPage !== 'private' && (
+                        <div key={currentPage} className="page-enter">
+                            {renderPage()}
+                        </div>
+                    )}
+                    {/* 常驻挂载：切到其它页签再切回来，未保存的输入不丢 */}
+                    <div className={currentPage === 'private' ? 'page-enter' : 'hidden'}>
+                        <PrivateKeywordsPage />
                     </div>
                 </div>
             </main>

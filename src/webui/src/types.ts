@@ -32,6 +32,34 @@ export interface KbServiceView {
     timeoutMs?: number
 }
 
+export type KeywordMatchType = 'prefix' | 'contains' | 'regex'
+
+/** 一条本地关键词规则；图片/多回复池/动作由原生配置页维护，这里原样带回 */
+export interface KeywordRuleView {
+    match: string
+    matchType?: KeywordMatchType
+    reply: string
+    replies?: string[]
+    image?: string
+    aiFallback?: boolean
+    action?: 'reply' | 'ai' | 'human'
+}
+
+export interface PrivateConfigView {
+    enabled: boolean
+    /** 私聊兜底话术（历史字段；运行时兜底实际读 fallback.privateText） */
+    defaultReply?: string
+    whitelist?: (number | string)[]
+    whitelistText?: string
+    /** 同一私聊用户连发合并窗口（毫秒）；0 = 关闭 */
+    mergeWindowMs?: number
+}
+
+export interface AiTriggerView {
+    private: boolean
+    groupAtOnly: boolean
+}
+
 /** 页面只读取这些字段；其它配置原样透传，保存时按块合并 */
 export interface PluginConfigView {
     enabled: boolean
@@ -45,7 +73,12 @@ export interface PluginConfigView {
     kbService: KbServiceView
     groupWelcome?: { enabled: boolean; template: string }
     group?: { enabled: boolean }
-    private?: { enabled: boolean }
+    private?: PrivateConfigView
+    aiTrigger?: AiTriggerView
+    keywords?: KeywordRuleView[]
+    keywordsText?: string
+    blacklist?: (number | string)[]
+    blacklistText?: string
     [key: string]: unknown
 }
 
