@@ -63,7 +63,7 @@ export default function BasicPage() {
     }
 
     return (
-        <div className="space-y-4 max-w-2xl">
+        <div className="space-y-4 max-w-2xl mx-auto">
             <div className="card animate-fade-in-up">
                 <h3 className="text-sm font-semibold text-gray-900 dark:text-white mb-5">基础配置</h3>
                 <div className="space-y-5">

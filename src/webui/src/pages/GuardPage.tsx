@@ -87,7 +87,7 @@ export default function GuardPage() {
     }
 
     return (
-        <div className="space-y-4 max-w-3xl">
+        <div className="space-y-4 max-w-3xl mx-auto">
             <div className="card animate-fade-in-up p-5">
                 <h3 className="text-sm font-semibold text-gray-900 dark:text-white mb-4">屏蔽词与命中动作</h3>
                 <div className="space-y-4">

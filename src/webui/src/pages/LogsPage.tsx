@@ -41,7 +41,7 @@ export default function LogsPage() {
     }, [fetchLogs])
 
     return (
-        <div className="space-y-4">
+        <div className="space-y-4 mx-auto max-w-5xl">
             <div className="flex items-center justify-between">
                 <p className="text-xs text-gray-400">最近 {entries.length} 条（内存环形缓冲，最多保留 200 条，重启清空）</p>
                 <button className="btn btn-ghost text-xs" onClick={fetchLogs}>刷新</button>

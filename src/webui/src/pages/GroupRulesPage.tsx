@@ -231,7 +231,7 @@ export default function GroupRulesPage() {
     const knownOptions = known.filter((item) => !rows.some((row) => row.groupId === item.groupId))
 
     return (
-        <div className="max-w-7xl grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_360px] gap-4 items-start">
+        <div className="max-w-7xl mx-auto grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_360px] gap-4 items-start">
             {/* ===== 左：配置 ===== */}
             <div className="space-y-4 min-w-0">
                 <div className="card p-5">

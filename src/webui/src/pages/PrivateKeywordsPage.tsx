@@ -309,7 +309,7 @@ export default function PrivateKeywordsPage() {
     }
 
     return (
-        <div className="space-y-4 max-w-7xl">
+        <div className="space-y-4 max-w-7xl mx-auto">
             <div className="card animate-fade-in-up p-5">
                 <h3 className="text-sm font-semibold text-gray-900 dark:text-white mb-5">私聊</h3>
                 <div className="space-y-5">
