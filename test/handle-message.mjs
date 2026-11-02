@@ -426,7 +426,7 @@ assert.deepEqual(outbox[outbox.length - 1].message, [
 console.log("ok 14 - 群聊带图 + @ 段构造正确（base64 直通）");
 
 // 15) 本地图片 >5MB 被跳过：只发文字
-const bigPath = "/root/dev/plugin/test/tmp-big-image.png";
+const bigPath = path.join(dir, "tmp-big-image.png");
 fs.writeFileSync(bigPath, Buffer.alloc(5 * 1024 * 1024 + 1));
 try {
   pluginState.config = sanitizeConfig({
