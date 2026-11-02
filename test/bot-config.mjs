@@ -12,7 +12,8 @@
  *   7) startServerConfigSync / stopServerConfigSync 生命周期无 ReferenceError
  *   8) 端口解析：webui.json 的 port 优先于 Host 头端口（SSH 隧道场景拨真实端口）
  *   9) 启动 import body 带本地 nickname；服务端昵称为空时补一次只改昵称的 PUT（expectedRevision 防覆盖）
- *   10) 本地昵称为空：import 不带 nickname、不补 PUT
+ *   10) 本地昵称不可用：import 不带 nickname、不补 PUT
+ *   11) init 拿到空昵称、同步阶段重取成功：补写触发
  *
  * 用法：先 pnpm build，再 node --test test/*.mjs
  */
@@ -409,7 +410,29 @@ await syncBotConfig(false);
 assert.equal(putCalls.length, 1, "补写成功后下一轮同步不应重复 PUT");
 console.log("ok 9 - import 带 nickname；服务端昵称为空补一次 PUT（expectedRevision 防覆盖）");
 
-// ---------- 10) 本地昵称为空：import 不带 nickname，也不补 PUT ----------
+// ---------- 10) 本地昵称不可用：import 不带 nickname，也不补 PUT ----------
+pluginState.nickname = "";
+const originalCall = ctx.actions.call;
+ctx.actions.call = async (action) => {
+    if (action === "get_login_info") throw new Error("OneBot 未就绪");
+    return originalCall(action);
+};
+importCalls = [];
+putCalls = [];
+serverRecord = null;
+logs.length = 0;
+startServerConfigSync();
+await new Promise((resolve) => setTimeout(resolve, 300));
+stopServerConfigSync();
+ctx.actions.call = originalCall;
+pluginState.nickname = "测试昵称";
+assert.equal(importCalls.length, 1, "启动应恰好 import 一次");
+assert.ok(!("nickname" in importCalls[0]), "本地昵称不可用时 import body 不应带 nickname");
+assert.equal(putCalls.length, 0, "本地昵称不可用时不应补写");
+assert.ok(logs.some((l) => l.includes("[配置] 本地昵称不可用")), "昵称不可用应有 debug 日志");
+console.log("ok 10 - 本地昵称不可用：import 不带 nickname、不补 PUT");
+
+// ---------- 11) init 时昵称为空串、同步时重取成功：补写应触发 ----------
 pluginState.nickname = "";
 importCalls = [];
 putCalls = [];
@@ -418,11 +441,11 @@ logs.length = 0;
 startServerConfigSync();
 await new Promise((resolve) => setTimeout(resolve, 300));
 stopServerConfigSync();
-pluginState.nickname = "测试昵称";
-assert.equal(importCalls.length, 1, "启动应恰好 import 一次");
-assert.ok(!("nickname" in importCalls[0]), "本地昵称为空时 import body 不应带 nickname");
-assert.equal(putCalls.length, 0, "本地昵称为空时不应补写");
-console.log("ok 10 - 本地昵称为空：import 不带 nickname、不补 PUT");
+assert.equal(pluginState.nickname, "测试昵称", "refreshNickname 应把重取到的昵称缓存回 state");
+assert.equal(putCalls.length, 1, "init 拿到空昵称时同步阶段重取成功应补写一次");
+assert.equal(putCalls[0].body.nickname, "测试昵称", "补写 PUT 应带重取到的昵称");
+assert.equal(putCalls[0].body.expectedRevision, 1, "补写 PUT 应带刚读到的 expectedRevision");
+console.log("ok 11 - init 昵称为空串时同步阶段重取并补写");
 
 // ---------- 清理 ----------
 stopServerConfigSync();

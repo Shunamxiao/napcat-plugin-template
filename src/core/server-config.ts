@@ -116,8 +116,8 @@ export async function syncBotConfig(initial = false): Promise<void> {
         status.lastSyncAt = new Date().toISOString();
         status.lastError = null;
         if (shouldApply) log('info', '[配置] 从服务端同步 revision=' + entry.revision);
-        // 服务端昵称为空而本地有：补写一次（老记录是早期不带昵称的 import 建的）
-        if (!entry.nickname && pluginState.nickname) await backfillBotNickname(cfg, selfId);
+        // 服务端昵称为空：补写一次（老记录是早期不带昵称的 import 建的）；本地昵称也空时下一轮再试
+        if (!entry.nickname) await backfillBotNickname(cfg, selfId);
     } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         const firstFailure = status.lastError === null;
@@ -130,17 +130,24 @@ export async function syncBotConfig(initial = false): Promise<void> {
 
 /**
  * 补写服务端昵称：只改 nickname 字段，不动配置内容。
- * 读当前配置 → 原样 PUT，expectedRevision 用刚读到的值防并发覆盖；失败只 warn，下一轮同步再试。
+ * init 早启动阶段拿到的昵称可能是空串（QQ 未就绪），这里先重取一次；
+ * 仍取不到就静默返回，下一轮同步再试。读当前配置 → 原样 PUT，
+ * expectedRevision 用刚读到的值防并发覆盖；失败只 warn。
  */
 async function backfillBotNickname(cfg: KbServiceConfig, selfId: string): Promise<void> {
     try {
+        const nickname = await pluginState.refreshNickname();
+        if (!nickname) {
+            log('debug', '[配置] 本地昵称不可用，本轮跳过补写服务端昵称');
+            return;
+        }
         const entry = await fetchBotConfig(cfg, selfId);
         if (!entry) {
             log('warn', '[配置] 补写服务端昵称失败：读取当前配置失败');
             return;
         }
         if (entry.nickname) return;
-        const result = await putBotConfig(cfg, selfId, entry.config, entry.revision, pluginState.nickname);
+        const result = await putBotConfig(cfg, selfId, entry.config, entry.revision, nickname);
         if (!result.ok) {
             log('warn', '[配置] 补写服务端昵称失败：' + (result.error ?? 'HTTP ' + result.status));
             return;

@@ -524,6 +524,21 @@ class PluginState {
     }
 
     /**
+     * 取当前账号昵称；init 早启动阶段可能拿到空串（QQ 未就绪），这里空时重取一次并缓存。
+     * OneBot 未就绪/调用失败返回空串，由调用方决定是否下轮再试。
+     */
+    async refreshNickname(): Promise<string> {
+        if (this.nickname) return this.nickname;
+        try {
+            const res = await this.ctx.actions.call(
+                'get_login_info', {}, this.ctx.adapterName, this.ctx.pluginManager.config
+            ) as { nickname?: unknown };
+            if (typeof res?.nickname === 'string') this.nickname = res.nickname;
+        } catch { /* 未就绪：保持空串 */ }
+        return this.nickname;
+    }
+
+    /**
      * 清理（在 plugin_cleanup 中调用）
      */
     cleanup(): void {
