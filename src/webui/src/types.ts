@@ -43,6 +43,7 @@ export interface KeywordRuleView {
     image?: string
     aiFallback?: boolean
     action?: 'reply' | 'ai' | 'human'
+    enabled?: boolean
 }
 
 export interface PrivateConfigView {

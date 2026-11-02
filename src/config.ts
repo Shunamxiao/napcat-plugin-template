@@ -6,17 +6,20 @@ import type { NapCatPluginContext, PluginConfigSchema } from 'napcat-types/napca
 import type { GroupRule, KeywordRule, PluginConfig } from './types';
 
 
-/** 规则数组 → 多行文本(每行: 匹配词|类型|回复|图片(可选)|ai(可选)|动作(可选))；多回复池只在扩展配置页维护 */
+/** 规则数组 → 多行文本(每行: 匹配词|类型|回复|图片(可选)|ai(可选)|动作(可选)|off(可选))；多回复池只在扩展配置页维护 */
 export function keywordsToText(kw: KeywordRule[]): string {
     return kw.map((k) => {
         const action = k.action && k.action !== 'reply' ? k.action : '';
-        // 图片/AI 标记/动作缺省时必须保留空段，避免解析错位
+        const off = k.enabled === false;
+        // 图片/AI 标记/动作/停用标记缺省时必须保留空段，避免解析错位
         const extra: string[] = [];
         if (k.image) extra.push(k.image);
-        else if (k.aiFallback || action) extra.push('');
+        else if (k.aiFallback || action || off) extra.push('');
         if (k.aiFallback) extra.push('ai');
-        else if (action) extra.push('');
+        else if (action || off) extra.push('');
         if (action) extra.push(action);
+        else if (off) extra.push('');
+        if (off) extra.push('off');
         return `${k.match}|${k.matchType || 'contains'}|${k.reply}${extra.length ? '|' + extra.join('|') : ''}`;
     }).join('\n');
 }
@@ -30,15 +33,19 @@ export function textToKeywords(text: string): KeywordRule[] {
         .map((line) => {
             const parts = line.split('|');
             const match = (parts[0] || '').trim();
-            const type = (parts[1] || 'contains').trim() === 'prefix' ? 'prefix' : 'contains';
-            // 第4段为可选图片(URL/base64:///路径)，第5段为可选 AI 升级标记，第6段为可选动作
+            const rawType = (parts[1] || 'contains').trim().toLowerCase();
+            const type = rawType === 'prefix' ? 'prefix' : rawType === 'regex' ? 'regex' : 'contains';
+            // 第4段可选图片(URL/base64:///路径)，第5段可选 AI 升级标记，第6段可选动作，第7段可选停用
             const reply = (parts[2] || '').trim();
             const image = (parts[3] || '').trim();
             const aiFlag = (parts[4] || '').trim().toLowerCase();
             const rawAction = (parts[5] || '').trim().toLowerCase();
             const action = rawAction === 'ai' ? 'ai' : rawAction === 'human' ? 'human' : 'reply';
+            const rawDisabled = (parts[6] || '').trim().toLowerCase();
+            const disabled = rawDisabled === 'off' || rawDisabled === '0' || rawDisabled === 'false' || rawDisabled === 'disabled';
             if (!match || (!reply && !image && action !== 'ai')) return null;
             const rule: KeywordRule = { match, matchType: type, reply, action };
+            if (disabled) rule.enabled = false;
             if (image) rule.image = image;
             if (aiFlag === 'ai' || aiFlag === '1' || aiFlag === 'true') rule.aiFallback = true;
             return rule;
@@ -143,7 +150,7 @@ export function buildConfigSchema(ctx: NapCatPluginContext): PluginConfigSchema 
         ctx.NapCatConfig.boolean('private.enabled', '私聊自动回复', false, '开启后私聊消息触发自动回复'),
         ctx.NapCatConfig.number('private.mergeWindowMs', '私聊连发合并窗口(毫秒)', 3000, '同一私聊用户在窗口内连发的消息合并成一次问答（换行拼接，最多 5 条）；0 = 关闭'),
         ctx.NapCatConfig.html('<div style="margin:12px 0 4px;font-weight:600;font-size:14px;">关键词规则</div>'),
-        ctx.NapCatConfig.text('keywordsText', '关键词规则列表', keywordsToText(DEFAULT_CONFIG.keywords), '每行一条:匹配词|类型|回复|图片URL或路径(第4段可选)|ai(第5段可选)|动作(第6段可选:reply/ai/human)。类型 prefix/contains/regex。多回复池请在扩展配置页用 ||| 分隔编辑。图片只支持 jpg/png/webp/gif，建议 CDN 直链，小图可用 base64://'),
+        ctx.NapCatConfig.text('keywordsText', '关键词规则列表', keywordsToText(DEFAULT_CONFIG.keywords), '每行一条:匹配词|类型|回复|图片URL或路径(第4段可选)|ai(第5段可选)|动作(第6段可选:reply/ai/human)|off(第7段可选:停用该规则)。类型 prefix/contains/regex。图片只支持 jpg/png/webp/gif，建议 CDN 直链，小图可用 base64://'),
         ctx.NapCatConfig.html('<div style="margin:12px 0 4px;font-weight:600;font-size:14px;">群聊设置</div>'),
         ctx.NapCatConfig.boolean('group.enabled', '群聊自动回复', true, '开启后群聊消息触发自动回复'),
         ctx.NapCatConfig.boolean('debug', '调试模式', false, '输出详细日志'),

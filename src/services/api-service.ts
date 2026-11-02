@@ -26,6 +26,7 @@ import { maskConfig, pluginState } from '../core/state';
 import { startGuardWordsSync } from '../core/guard-words';
 import { startGroupConfigSync, buildEffectiveGroupPolicies, getGroupConfigStatus, getServerGroup, getServerGroupConfigs, getServerGuardPolicy, resolveEffectiveGroupPolicy, resolveGroupWelcome, resolveGuardPolicy, applyServerGroupEntry, applyServerGuardPolicy } from '../core/group-config';
 import { hitLog } from '../core/hit-log';
+import { resetKeywordStats, snapshotKeywordStats } from '../core/keyword-stats';
 import { putServerGroup, putServerGuardPolicy, type GroupPatch } from './admin-client';
 import { resolveImageSource, sendRelayMessage } from '../handlers/message-handler';
 import type { GuardPenaltyPolicy, ServerGroupConfig } from '../types';
@@ -88,6 +89,19 @@ export function registerApiRoutes(ctx: NapCatPluginContext): void {
             ctx.logger.error('保存配置失败:', err);
             res.status(500).json({ code: -1, message: err instanceof Error ? err.message : String(err) });
         }
+    });
+
+    // ==================== 关键词命中统计（无鉴权）====================
+
+    /** 命中统计：{"<match>|<matchType>": {count,lastAt}} */
+    router.getNoAuth('/keyword-stats', (_req, res) => {
+        res.json({ code: 0, data: snapshotKeywordStats() });
+    });
+
+    /** 重置命中统计：清内存并立即写空对象 */
+    router.postNoAuth('/keyword-stats/reset', (_req, res) => {
+        resetKeywordStats();
+        res.json({ code: 0, message: 'ok' });
     });
 
     // ==================== 反向下发（服务侧 Telegram 回流）====================

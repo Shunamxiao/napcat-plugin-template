@@ -123,6 +123,8 @@ function sanitizeKeywordRule(raw: unknown): KeywordRule | null {
     if (replies.length > 0) rule.replies = replies;
     if (typeof raw.image === 'string' && raw.image.trim()) rule.image = raw.image.trim();
     if (raw.aiFallback === true) rule.aiFallback = true;
+    // 只落盘 false；true/缺省都视为启用，避免旧配置被无谓改写
+    if (raw.enabled === false) rule.enabled = false;
     return rule;
 }
 

@@ -32,6 +32,7 @@ import { maskConfig, pluginState } from './core/state';
 import { buildEffectiveGroupPolicies, startGroupConfigSync, stopGroupConfigSync } from './core/group-config';
 import { clearGuardPenalty } from './core/guard-penalty';
 import { hitLog } from './core/hit-log';
+import { initKeywordStats, shutdownKeywordStats } from './core/keyword-stats';
 import { startBlocklistSync, stopBlocklistSync } from './core/blocklist';
 import { startGuardWordsSync, stopGuardWordsSync } from './core/guard-words';
 import { clearPrivateMerge, handleMessage } from './handlers/message-handler';
@@ -56,6 +57,11 @@ export const plugin_init: PluginModule['plugin_init'] = async (ctx) => {
         pluginState.init(ctx);
 
         ctx.logger.info('插件初始化中...');
+
+        // 关键词命中统计：路径从数据目录解析，日志打出绝对路径便于排障
+        const keywordStatsFile = pluginState.getDataFilePath('keyword-stats.json');
+        initKeywordStats(keywordStatsFile);
+        ctx.logger.info('关键词命中统计文件: ' + keywordStatsFile);
 
         // 2. 生成配置 Schema（用于 NapCat WebUI 配置面板）
         plugin_config_ui = buildConfigSchema(ctx);
@@ -118,6 +124,8 @@ export const plugin_cleanup: PluginModule['plugin_cleanup'] = async (ctx) => {
         clearGuardPenalty();
         hitLog.clear();
         clearPrivateMerge();
+        // 取消防抖并立即落盘，正常卸载不丢最后一个窗口的命中
+        shutdownKeywordStats();
         pluginState.cleanup();
         ctx.logger.info('插件已卸载');
     } catch (e) {
@@ -284,6 +292,7 @@ export { matchGuardWord, runGroupGuard, guardTargetsGroup, mergeGuardWords } fro
 export { rememberSentMessage, isSentByThisInstance, clearSentMessages } from './core/sent-messages';
 export { beginCollect, clearCollect, collectKey, getCollect, stepCollect, COLLECT_TIMEOUT_MS } from './core/collect';
 export { keywordsToText, textToKeywords } from './config';
+export { initKeywordStats, recordKeywordHit, snapshotKeywordStats, resetKeywordStats, flushKeywordStats, shutdownKeywordStats, keywordStatKey } from './core/keyword-stats';
 export { resolveWelcome, renderWelcomeTemplate } from './handlers/event-handler';
 export { handleMessage, resolveImageSource, sendRelayMessage, clearPrivateMerge, SERVICE_DOWN_REPLY } from './handlers/message-handler';
 export { registerApiRoutes } from './services/api-service';

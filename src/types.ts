@@ -17,6 +17,8 @@ export interface KeywordRule {
     reply: string;
     /** 回复池：非空时随机选一条发送，优先于 reply */
     replies?: string[];
+    /** 是否启用（缺省视为启用；false 时跳过匹配，群/私聊共用） */
+    enabled?: boolean;
     /** 可选:随回复发送的图片(URL / base64://xxx / 容器内绝对路径) */
     image?: string;
     /** 命中本规则时先问知识库/AI,拿不到答案再退回 reply(默认 false) */

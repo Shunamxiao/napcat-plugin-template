@@ -10,6 +10,7 @@ import { pickReply, planReply, resolveSend, type Plan } from '../core/escalation
 import { resolveGroupFallback } from '../core/policy';
 import { resolveEffectiveGroupPolicy } from '../core/group-config';
 import { hitLog } from '../core/hit-log';
+import { recordKeywordHit } from '../core/keyword-stats';
 import { appendHandoffRecord } from '../core/handoff';
 import { classifySendError, sendWithRetry } from '../core/send-retry';
 import { SendGuard } from '../core/send-guard';
@@ -149,6 +150,7 @@ export async function handleMessage(ctx: NapCatPluginContext, event: OB11Message
         // 群专属关键词非空时只按群规则匹配,避免全局规则串群
         const keywords = groupRule.keywords?.length ? groupRule.keywords : config.keywords;
         const hit = matchKeywords(keywords, text);
+        if (hit) recordKeywordHit(hit);
         const plan = planReply({
             kind: 'group',
             userId: senderId,
@@ -274,6 +276,7 @@ async function processPrivateMessage(ctx: NapCatPluginContext, event: OB11Messag
     // 追问中的用户消息优先作为答案消费，不再走关键词/FAQ
     if (await consumeCollectAnswer(ctx, event, collectKey('private', senderId), senderId, undefined, text, 'private')) return;
     const hit = matchKeywords(config.keywords, text);
+    if (hit) recordKeywordHit(hit);
     const plan = planReply({
         kind: 'private',
         userId: senderId,
@@ -601,6 +604,8 @@ function respondServiceDown(
 /** 关键词匹配:prefix=前缀,contains=包含(默认)。返回命中的规则本身,便于以规则为粒度做冷却 */
 function matchKeywords(keywords: KeywordRule[], text: string): KeywordRule | null {
     for (const rule of keywords) {
+        // 停用规则保留在列表里，但跳过匹配
+        if (rule.enabled === false) continue;
         const m = (rule.match || '').trim();
         if (!m) continue;
         let hit = false;
