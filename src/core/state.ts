@@ -446,6 +446,9 @@ class PluginState {
     /** 机器人自身 QQ 号 */
     selfId: string = '';
 
+    /** 当前账号昵称（get_login_info，取不到为空串）；随配置导入/补写给服务端 */
+    nickname: string = '';
+
     /** 活跃的定时器 Map: jobId -> NodeJS.Timeout */
     timers: Map<string, ReturnType<typeof setInterval>> = new Map();
 
@@ -509,9 +512,10 @@ class PluginState {
         try {
             const res = await this.ctx.actions.call(
                 'get_login_info', {}, this.ctx.adapterName, this.ctx.pluginManager.config
-            ) as { user_id?: number | string };
+            ) as { user_id?: number | string; nickname?: unknown };
             if (res?.user_id) {
                 this.selfId = String(res.user_id);
+                if (typeof res.nickname === 'string') this.nickname = res.nickname;
                 this.logger.debug("(｡·ω·｡) 机器人 QQ: " + this.selfId);
             }
         } catch (e) {

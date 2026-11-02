@@ -11,6 +11,8 @@
  *      与 /api/status 六个新字段
  *   7) startServerConfigSync / stopServerConfigSync 生命周期无 ReferenceError
  *   8) 端口解析：webui.json 的 port 优先于 Host 头端口（SSH 隧道场景拨真实端口）
+ *   9) 启动 import body 带本地 nickname；服务端昵称为空时补一次只改昵称的 PUT（expectedRevision 防覆盖）
+ *   10) 本地昵称为空：import 不带 nickname、不补 PUT
  *
  * 用法：先 pnpm build，再 node --test test/*.mjs
  */
@@ -365,6 +367,62 @@ assert.equal(statusTunnel.body.data.webuiPort, 7777, "status.webuiPort 应为 we
 assert.equal(statusTunnel.body.data.instanceName, "acc-main", "隧道场景 instanceName 仍应按 uin 匹配成功");
 // webui.json 已随 dir 递归清理
 console.log("ok 8 - webui.json 端口优先于 Host 头端口");
+
+// ---------- 9) import 带 nickname；服务端昵称为空时补一次 PUT ----------
+let importCalls = [];
+putCalls = [];
+serverRecord = null;
+globalThis.fetch = async (url, init = {}) => {
+    const u = String(url);
+    const method = String(init.method || "GET").toUpperCase();
+    if (u.includes("/config/bots/" + SELF + "/import") && method === "POST") {
+        importCalls.push(JSON.parse(init.body));
+        // 模拟服务端已有无昵称的老记录：import 幂等，原样返回不覆盖
+        if (!serverRecord) serverRecord = { uin: SELF, nickname: "", revision: 1, config: JSON.parse(init.body).config };
+        return jsonRes({ revision: serverRecord.revision, imported: false });
+    }
+    if (u.includes("/config/bots/" + SELF) && method === "GET") {
+        if (!serverRecord) return new Response("{}", { status: 404 });
+        return jsonRes(serverRecord);
+    }
+    if (u.includes("/config/bots/" + SELF) && method === "PUT") {
+        const body = JSON.parse(init.body);
+        putCalls.push({ url: u, body });
+        serverRecord = { ...serverRecord, nickname: body.nickname, revision: serverRecord.revision + 1 };
+        return jsonRes({ revision: serverRecord.revision });
+    }
+    throw new TypeError("fetch failed（mock 未覆盖 " + method + " " + u + "）");
+};
+logs.length = 0;
+startServerConfigSync();
+await new Promise((resolve) => setTimeout(resolve, 300));
+stopServerConfigSync();
+assert.equal(pluginState.nickname, "测试昵称", "前置：本地昵称应来自 get_login_info");
+assert.equal(importCalls.length, 1, "启动应恰好 import 一次");
+assert.equal(importCalls[0].nickname, "测试昵称", "import body 应带本地昵称");
+assert.equal(putCalls.length, 1, "服务端昵称为空应恰好补写一次");
+assert.equal(putCalls[0].body.nickname, "测试昵称", "PUT 应带昵称");
+assert.equal(putCalls[0].body.expectedRevision, 1, "PUT 应带刚读到的 expectedRevision");
+assert.equal(putCalls[0].body.config.cooldownSeconds, cfg().cooldownSeconds, "PUT 只补昵称，配置内容应是刚读到的服务端版本");
+assert.ok(logs.some((l) => l.includes("[配置] 已补写服务端昵称")), "补写成功应打日志");
+await syncBotConfig(false);
+assert.equal(putCalls.length, 1, "补写成功后下一轮同步不应重复 PUT");
+console.log("ok 9 - import 带 nickname；服务端昵称为空补一次 PUT（expectedRevision 防覆盖）");
+
+// ---------- 10) 本地昵称为空：import 不带 nickname，也不补 PUT ----------
+pluginState.nickname = "";
+importCalls = [];
+putCalls = [];
+serverRecord = null;
+logs.length = 0;
+startServerConfigSync();
+await new Promise((resolve) => setTimeout(resolve, 300));
+stopServerConfigSync();
+pluginState.nickname = "测试昵称";
+assert.equal(importCalls.length, 1, "启动应恰好 import 一次");
+assert.ok(!("nickname" in importCalls[0]), "本地昵称为空时 import body 不应带 nickname");
+assert.equal(putCalls.length, 0, "本地昵称为空时不应补写");
+console.log("ok 10 - 本地昵称为空：import 不带 nickname、不补 PUT");
 
 // ---------- 清理 ----------
 stopServerConfigSync();

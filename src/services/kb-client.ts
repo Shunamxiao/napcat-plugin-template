@@ -470,21 +470,25 @@ export async function fetchBotConfig(
 
 /**
  * POST /config/bots/:uin/import：以本地配置为种子做幂等导入（服务端仅在没有记录时写入）。
- * 返回 true 只代表服务端 2xx 且响应是 JSON；失败一律 false，绝不抛错。
+ * nickname 非空时随 body 上报；返回 true 只代表服务端 2xx 且响应是 JSON；失败一律 false，绝不抛错。
  */
 export async function importBotConfig(
     cfg: KbServiceConfig,
     uin: string,
     config: unknown,
+    nickname?: string,
     fetchImpl: FetchLike = fetch,
 ): Promise<boolean> {
+    const body: Record<string, unknown> = { config };
+    const name = typeof nickname === 'string' ? nickname.trim() : '';
+    if (name) body.nickname = name;
     const data = await requestJson(
         cfg,
         '/config/bots/' + encodeURIComponent(uin) + '/import',
         {
             method: 'POST',
             headers: { 'content-type': 'application/json', 'x-bot-token': String(cfg.token || '') },
-            body: JSON.stringify({ config }),
+            body: JSON.stringify(body),
         },
         fetchImpl,
     );
@@ -492,7 +496,7 @@ export async function importBotConfig(
 }
 
 /**
- * PUT /config/bots/:uin：写入整份配置（expectedRevision 缺省 = 无条件写）。
+ * PUT /config/bots/:uin：写入整份配置（expectedRevision 缺省 = 无条件写；nickname 非空时一并更新）。
  * 2xx 返回 {ok:true, revision}；409 保留服务端当前 revision；其余失败带错误信息。绝不抛错。
  */
 export async function putBotConfig(
@@ -500,6 +504,7 @@ export async function putBotConfig(
     uin: string,
     config: unknown,
     expectedRevision?: number,
+    nickname?: string,
     fetchImpl: FetchLike = fetch,
 ): Promise<BotConfigWriteResult> {
     if (!cfg?.baseUrl || !cfg.token) return { ok: false, status: 503, error: '未配置服务地址或令牌' };
@@ -507,6 +512,8 @@ export async function putBotConfig(
     if (typeof expectedRevision === 'number' && Number.isFinite(expectedRevision) && expectedRevision > 0) {
         body.expectedRevision = expectedRevision;
     }
+    const name = typeof nickname === 'string' ? nickname.trim() : '';
+    if (name) body.nickname = name;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutOf(cfg));
     try {

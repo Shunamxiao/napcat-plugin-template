@@ -9,8 +9,8 @@
  * 凭据与现有上报链路同源：pluginState.config.kbService。
  */
 
-import type { PluginConfig } from '../types';
-import { fetchBotConfig, importBotConfig } from '../services/kb-client';
+import type { KbServiceConfig, PluginConfig } from '../types';
+import { fetchBotConfig, importBotConfig, putBotConfig } from '../services/kb-client';
 import { isTokenPlaceholder, pluginState } from './state';
 
 const DEFAULT_REFRESH_MS = 300000;
@@ -116,6 +116,8 @@ export async function syncBotConfig(initial = false): Promise<void> {
         status.lastSyncAt = new Date().toISOString();
         status.lastError = null;
         if (shouldApply) log('info', '[配置] 从服务端同步 revision=' + entry.revision);
+        // 服务端昵称为空而本地有：补写一次（老记录是早期不带昵称的 import 建的）
+        if (!entry.nickname && pluginState.nickname) await backfillBotNickname(cfg, selfId);
     } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         const firstFailure = status.lastError === null;
@@ -126,14 +128,39 @@ export async function syncBotConfig(initial = false): Promise<void> {
     }
 }
 
-/** 启动导入：以本地配置为种子 POST /import（服务端已有记录则原样返回，不覆盖） */
+/**
+ * 补写服务端昵称：只改 nickname 字段，不动配置内容。
+ * 读当前配置 → 原样 PUT，expectedRevision 用刚读到的值防并发覆盖；失败只 warn，下一轮同步再试。
+ */
+async function backfillBotNickname(cfg: KbServiceConfig, selfId: string): Promise<void> {
+    try {
+        const entry = await fetchBotConfig(cfg, selfId);
+        if (!entry) {
+            log('warn', '[配置] 补写服务端昵称失败：读取当前配置失败');
+            return;
+        }
+        if (entry.nickname) return;
+        const result = await putBotConfig(cfg, selfId, entry.config, entry.revision, pluginState.nickname);
+        if (!result.ok) {
+            log('warn', '[配置] 补写服务端昵称失败：' + (result.error ?? 'HTTP ' + result.status));
+            return;
+        }
+        status.serverNickname = pluginState.nickname;
+        if (typeof result.revision === 'number') status.revision = result.revision;
+        log('info', '[配置] 已补写服务端昵称');
+    } catch (err) {
+        log('warn', '[配置] 补写服务端昵称异常：' + (err instanceof Error ? err.message : String(err)));
+    }
+}
+
+/** 启动导入：以本地配置为种子 POST /import（服务端已有记录则原样返回，不覆盖），昵称一并上报 */
 async function importLocalConfig(): Promise<void> {
     const cfg = pluginState.config.kbService;
     if (!cfg?.baseUrl || !cfg.token) return;
     const selfId = pluginState.selfId;
     if (!selfId) return;
     try {
-        const ok = await importBotConfig(cfg, selfId, pluginState.config);
+        const ok = await importBotConfig(cfg, selfId, pluginState.config, pluginState.nickname);
         if (!ok) log('warn', '[配置] 启动导入失败，继续用本地配置');
     } catch (err) {
         log('warn', '[配置] 启动导入异常：' + (err instanceof Error ? err.message : String(err)));
