@@ -22,14 +22,16 @@ import type {
     PluginHttpResponse
 } from 'napcat-types/napcat-onebot/network/plugin/types';
 import { timingSafeEqual } from 'crypto';
-import { maskConfig, pluginState } from '../core/state';
+import { applyConfigPatch, maskConfig, pluginState, sanitizeConfig } from '../core/state';
 import { startGuardWordsSync } from '../core/guard-words';
 import { startGroupConfigSync, buildEffectiveGroupPolicies, getGroupConfigStatus, getServerGroup, getServerGroupConfigs, getServerGuardPolicy, resolveEffectiveGroupPolicy, resolveGroupWelcome, resolveGuardPolicy, applyServerGroupEntry, applyServerGuardPolicy } from '../core/group-config';
+import { getBotConfigStatus } from '../core/server-config';
 import { hitLog } from '../core/hit-log';
 import { resetKeywordStats, snapshotKeywordStats } from '../core/keyword-stats';
+import { fetchBotConfig, listServerBots, putBotConfig, type ServerBotSummary } from './kb-client';
 import { putServerGroup, putServerGuardPolicy, type GroupPatch } from './admin-client';
 import { resolveImageSource, sendRelayMessage } from '../handlers/message-handler';
-import type { GuardPenaltyPolicy, ServerGroupConfig } from '../types';
+import type { GuardPenaltyPolicy, PluginConfig, ServerGroupConfig } from '../types';
 
 /** 令牌比较：长度不同直接失败，等长走常量时间比较 */
 function tokenMatches(provided: string, expected: string): boolean {
@@ -37,6 +39,82 @@ function tokenMatches(provided: string, expected: string): boolean {
     const a = Buffer.from(provided);
     const b = Buffer.from(expected);
     return a.length === b.length && timingSafeEqual(a, b);
+}
+
+function isObject(v: unknown): v is Record<string, unknown> {
+    return v !== null && typeof v === 'object' && !Array.isArray(v);
+}
+
+/** 账号管理插件（同进程）的实例条目；字段名与契约 §2.5 一致 */
+interface PeerInfo {
+    uin: string;
+    name: string;
+    webuiPort: number | null;
+    running: boolean;
+    isLogin: boolean;
+}
+
+/** 从请求 Host 头解析本实例 WebUI 端口；没有端口（反代/Unix socket）回退 null */
+function portFromHost(req: PluginHttpRequest): number | null {
+    const host = req.headers?.host;
+    const raw = Array.isArray(host) ? host[0] ?? '' : host ?? '';
+    const m = String(raw).match(/:(\d+)$/);
+    if (!m) return null;
+    const port = Number(m[1]);
+    return Number.isInteger(port) && port > 0 && port <= 65535 ? port : null;
+}
+
+/** 账号插件实例列表缓存（按端口）：/status 每 10 秒被页面轮询，回源别跟着打满 */
+const peersCache = new Map<number, { at: number; peers: PeerInfo[] }>();
+
+const PEERS_TIMEOUT_MS = 4000;
+const PEERS_CACHE_MS = 10000;
+
+/**
+ * 转发同进程账号管理插件的 /plugin/napcat-plugin-account/api/instances。
+ * 只回源到本机回环地址的 WebUI 端口（从请求 Host 头解析），失败/超时一律空列表，绝不抛异常。
+ */
+async function fetchPeers(req: PluginHttpRequest): Promise<PeerInfo[]> {
+    const port = portFromHost(req);
+    if (!port) return [];
+    const now = Date.now();
+    const cached = peersCache.get(port);
+    if (cached && now - cached.at < PEERS_CACHE_MS) return cached.peers;
+    const peers: PeerInfo[] = [];
+    try {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), PEERS_TIMEOUT_MS);
+        try {
+            const res = await fetch('http://127.0.0.1:' + port + '/plugin/napcat-plugin-account/api/instances', {
+                signal: controller.signal,
+            });
+            if (res.ok) {
+                const data = (await res.json()) as unknown;
+                const list = Array.isArray(data)
+                    ? data
+                    : (isObject(data) && Array.isArray(data.data) ? data.data : []);
+                for (const item of list) {
+                    if (!isObject(item)) continue;
+                    const uin = typeof item.uin === 'string' ? item.uin.trim()
+                        : (typeof item.uin === 'number' ? String(item.uin) : '');
+                    if (!uin) continue;
+                    peers.push({
+                        uin,
+                        name: typeof item.name === 'string' ? item.name : '',
+                        webuiPort: typeof item.webuiPort === 'number' ? item.webuiPort : null,
+                        running: item.running === true,
+                        isLogin: item.isLogin === true,
+                    });
+                }
+            }
+        } finally {
+            clearTimeout(timer);
+        }
+        peersCache.set(port, { at: now, peers });
+    } catch {
+        // 账号插件不在/未就绪：按空列表处理，且不缓存失败结果（下次轮询重试）
+    }
+    return peers;
 }
 
 /**
@@ -47,8 +125,22 @@ export function registerApiRoutes(ctx: NapCatPluginContext): void {
 
     // ==================== 插件信息（无鉴权）====================
 
-    /** 获取插件状态 */
-    router.getNoAuth('/status', (_req, res) => {
+    /** 获取插件状态（含身份/配置来源六字段，契约 §2.4） */
+    router.getNoAuth('/status', async (req, res) => {
+        const botStatus = getBotConfigStatus();
+        // 昵称：get_login_info → 服务端 nickname → ""
+        let nickname = '';
+        try {
+            const info = await ctx.actions.call(
+                'get_login_info', {}, ctx.adapterName, ctx.pluginManager.config
+            ) as { nickname?: unknown };
+            if (typeof info?.nickname === 'string') nickname = info.nickname;
+        } catch { /* OneBot 未就绪时走回退 */ }
+        if (!nickname) nickname = botStatus.serverNickname;
+        // 实例名：账号管理插件里按 uin 匹配的 name，匹配不到回退 ""
+        const selfId = pluginState.selfId;
+        const peers = await fetchPeers(req);
+        const selfPeer = selfId ? peers.find((p) => p.uin === selfId) : undefined;
         res.json({
             code: 0,
             data: {
@@ -57,8 +149,116 @@ export function registerApiRoutes(ctx: NapCatPluginContext): void {
                 uptimeFormatted: pluginState.getUptimeFormatted(),
                 config: maskConfig(pluginState.config),
                 stats: pluginState.stats,
+                selfId: selfId || null,
+                nickname,
+                instanceName: selfPeer?.name ?? '',
+                webuiPort: portFromHost(req),
+                configRevision: botStatus.revision,
+                configSource: botStatus.source,
             },
         });
+    });
+
+    // ==================== 多账号 / 服务端 bot 配置 ====================
+
+    /** 同进程账号管理插件实例列表；失败回 {peers:[]}（契约 §2.5） */
+    router.getNoAuth('/peers', async (req, res) => {
+        const peers = await fetchPeers(req);
+        res.json({ code: 0, data: { peers } });
+    });
+
+    /** 服务端 bot 列表（只读）；未配置/失败回 {bots:[]}（契约 §2.7） */
+    router.getNoAuth('/server-bots', async (_req, res) => {
+        const cfg = pluginState.config.kbService;
+        let bots: ServerBotSummary[] = [];
+        if (cfg?.baseUrl && cfg.token) {
+            try {
+                bots = (await listServerBots(cfg)) ?? [];
+            } catch (e) {
+                ctx.logger.warn('[配置] 服务端 bot 列表读取失败:', e);
+                bots = [];
+            }
+        }
+        res.json({ code: 0, data: { bots } });
+    });
+
+    /** 读服务端整份配置（只读代理，服务端已掩码原样透传）；支持 ?uin= 编辑其他实例，缺省=selfId */
+    router.getNoAuth('/server-config', async (req, res) => {
+        const rawUin = req.query?.uin;
+        const qUin = Array.isArray(rawUin) ? rawUin[0] : rawUin;
+        const uin = String(qUin || pluginState.selfId || '').trim();
+        if (!uin) {
+            return res.status(502).json({ code: -1, error: '未获取到 selfId，无法读取服务端配置' });
+        }
+        const cfg = pluginState.config.kbService;
+        if (!cfg?.baseUrl || !cfg.token) {
+            return res.status(502).json({ code: -1, error: '未配置服务地址或令牌' });
+        }
+        const entry = await fetchBotConfig(cfg, uin);
+        if (!entry) {
+            return res.status(502).json({ code: -1, error: '服务端配置读取失败（未同步或服务不可达）' });
+        }
+        res.json({ code: 0, data: { config: entry.config, revision: entry.revision } });
+    });
+
+    /**
+     * 保存配置（写代理，必须走鉴权路由；NoAuth 出口禁止开写代理）。
+     * body: {uin, config, expectedRevision?}；config 是页面补丁，与目标实例现有配置合并后整份 PUT。
+     * 当前实例：PUT 成功后补丁同步落本地（保存并立即生效）；其他实例：只写服务端，不动本地。
+     * 409 原样回给页面（含服务端当前 revision），不覆盖本地。
+     */
+    router.post('/server-config', async (req, res) => {
+        const body = isObject(req.body) ? req.body : {};
+        const uin = typeof body.uin === 'string' ? body.uin.trim() : '';
+        if (!/^[A-Za-z0-9_-]{1,64}$/.test(uin)) {
+            return res.status(400).json({ code: -1, message: 'uin 不合法' });
+        }
+        if (!isObject(body.config)) {
+            return res.status(400).json({ code: -1, message: 'config 必须是对象' });
+        }
+        const cfg = pluginState.config.kbService;
+        if (!cfg?.baseUrl || !cfg.token) {
+            return res.status(503).json({ code: -1, message: '未配置服务地址或令牌' });
+        }
+        const expectedRevision = typeof body.expectedRevision === 'number'
+            && Number.isInteger(body.expectedRevision) && body.expectedRevision > 0
+            ? body.expectedRevision
+            : undefined;
+        const patch = body.config as Partial<PluginConfig>;
+        try {
+            let merged: PluginConfig;
+            if (uin === pluginState.selfId) {
+                merged = applyConfigPatch(pluginState.config, patch);
+            } else {
+                // 其他实例：以服务端该号现有配置为基底合并，绝不把本实例配置写过去
+                const remote = await fetchBotConfig(cfg, uin);
+                if (!remote) {
+                    return res.status(404).json({ code: -1, message: '服务端尚无该号的配置记录，无法合并保存' });
+                }
+                merged = applyConfigPatch(sanitizeConfig(remote.config), patch);
+            }
+            const result = await putBotConfig(cfg, uin, merged, expectedRevision);
+            if (!result.ok) {
+                if (result.status === 409) {
+                    ctx.logger.warn('[配置] 保存冲突 uin=' + uin + ' 服务端 revision=' + (result.revision ?? '?'));
+                    return res.status(409).json({
+                        code: 409,
+                        message: '配置已被其他端修改，请刷新后重试',
+                        data: { revision: result.revision ?? null },
+                    });
+                }
+                const status = result.status >= 400 && result.status <= 599 ? result.status : 502;
+                return res.status(status).json({ code: -1, message: result.error ?? '保存失败' });
+            }
+            if (uin === pluginState.selfId) {
+                pluginState.updateConfig(patch);
+            }
+            ctx.logger.info('[配置] 已保存到服务端 uin=' + uin + ' revision=' + result.revision);
+            res.json({ code: 0, data: { revision: result.revision } });
+        } catch (err) {
+            ctx.logger.error('[配置] 保存失败 uin=' + uin + ':', err);
+            res.status(500).json({ code: -1, message: err instanceof Error ? err.message : String(err) });
+        }
     });
 
     // ==================== 配置管理（无鉴权）====================

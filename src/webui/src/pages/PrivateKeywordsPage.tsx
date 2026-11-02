@@ -1,7 +1,8 @@
 import { Fragment, useCallback, useEffect, useState } from 'react'
-import { noAuthFetch } from '../utils/api'
+import { fetchBotConfigView, noAuthFetch, saveBotConfig } from '../utils/api'
 import { showToast } from '../hooks/useToast'
-import type { KeywordMatchType, KeywordRuleView, PluginConfigView } from '../types'
+import { useAccount } from '../hooks/useAccount'
+import type { KeywordMatchType, KeywordRuleView } from '../types'
 
 type RuleAction = 'reply' | 'ai' | 'human'
 
@@ -101,6 +102,7 @@ function rulesToText(rules: KeywordRuleView[]): string {
 
 /** 私聊与关键词：私聊开关/兜底/白名单/合并窗口、AI 私聊兜底、关键词表与黑名单 */
 export default function PrivateKeywordsPage() {
+    const { selectedUin, isCurrent, configRevision } = useAccount()
     const [loaded, setLoaded] = useState(false)
     const [saving, setSaving] = useState(false)
     const [privateEnabled, setPrivateEnabled] = useState(false)
@@ -112,12 +114,14 @@ export default function PrivateKeywordsPage() {
     const [rows, setRows] = useState<KeywordRow[]>([])
     const [stats, setStats] = useState<KeywordStats>({})
     const [blacklistText, setBlacklistText] = useState('')
+    /** 编辑基底的服务端 revision（其他实例时用） */
+    const [editRevision, setEditRevision] = useState<number | null>(null)
 
     const fetchConfig = useCallback(async () => {
         try {
-            const res = await noAuthFetch<PluginConfigView>('/config')
-            if (res.code !== 0 || !res.data) throw new Error(res.message || '返回为空')
-            const data = res.data
+            const view = await fetchBotConfigView(selectedUin, isCurrent)
+            const data = view.config
+            setEditRevision(view.revision)
             setPrivateEnabled(data.private?.enabled === true)
             setDefaultReply(data.private?.defaultReply ?? '')
             // 以数组为准生成文本，避免盘上的 whitelistText/blacklistText 陈旧
@@ -131,7 +135,7 @@ export default function PrivateKeywordsPage() {
         } catch (e) {
             showToast('获取私聊配置失败：' + (e instanceof Error ? e.message : String(e)), 'error')
         }
-    }, [])
+    }, [selectedUin, isCurrent])
 
     const fetchStats = useCallback(async () => {
         try {
@@ -245,6 +249,7 @@ export default function PrivateKeywordsPage() {
     }
 
     const save = async () => {
+        if (!selectedUin) return
         const rules = buildRules()
         if (!rules) return
         const whitelist = parseIdLines(whitelistText)
@@ -252,26 +257,23 @@ export default function PrivateKeywordsPage() {
         const windowMs = Math.min(60000, Math.max(0, Math.floor(Number(mergeWindowMs) || 0)))
         setSaving(true)
         try {
-            const res = await noAuthFetch('/config', {
-                method: 'POST',
-                body: JSON.stringify({
-                    private: {
-                        enabled: privateEnabled,
-                        defaultReply,
-                        whitelist,
-                        whitelistText,
-                        mergeWindowMs: windowMs
-                    },
-                    aiTrigger: { private: aiPrivate },
-                    keywords: rules,
-                    // 服务端按 keywordsText 覆盖 keywords：两个字段必须同时写，否则重启回退
-                    keywordsText: rulesToText(rules),
-                    blacklist,
-                    blacklistText
-                })
-            })
-            if (res.code !== 0) throw new Error(res.message || '保存失败')
-            showToast('私聊与关键词已保存', 'success')
+            const result = await saveBotConfig({
+                private: {
+                    enabled: privateEnabled,
+                    defaultReply,
+                    whitelist,
+                    whitelistText,
+                    mergeWindowMs: windowMs
+                },
+                aiTrigger: { private: aiPrivate },
+                keywords: rules,
+                // 服务端按 keywordsText 覆盖 keywords：两个字段必须同时写，否则重启回退
+                keywordsText: rulesToText(rules),
+                blacklist,
+                blacklistText
+            }, selectedUin, isCurrent ? configRevision : editRevision)
+            if (!result.ok) throw new Error(result.message)
+            showToast(isCurrent ? '私聊与关键词已保存' : '已保存到服务端，该号下次同步后生效', 'success')
             await fetchConfig()
         } catch (e) {
             showToast('保存失败：' + (e instanceof Error ? e.message : String(e)), 'error')
@@ -578,7 +580,7 @@ export default function PrivateKeywordsPage() {
 
             <div className="flex justify-end">
                 <button className="btn btn-primary" onClick={save} disabled={saving}>
-                    {saving ? '保存中...' : '保存私聊与关键词'}
+                    {saving ? '保存中...' : isCurrent ? '保存并立即生效' : '保存到服务端'}
                 </button>
             </div>
         </div>

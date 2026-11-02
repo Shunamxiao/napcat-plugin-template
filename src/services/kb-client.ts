@@ -392,6 +392,158 @@ export async function fetchGuardWords(
     return words;
 }
 
+// ==================== 服务端 bot 配置（/config/bots*，契约 docs/bot-config-contract.md） ====================
+
+/** GET /config/bots 的一条；服务端只存 uin/nickname/config/revision/updatedAt */
+export interface ServerBotSummary {
+    uin: string;
+    nickname: string;
+    revision: number;
+    updatedAt?: string;
+}
+
+/** GET /config/bots/:uin 的解析结果；config 是服务端原样存储的整份插件配置（token 已掩码） */
+export interface ServerBotConfigPayload {
+    uin: string;
+    nickname: string;
+    config: Record<string, unknown>;
+    revision: number;
+}
+
+/** PUT /config/bots/:uin 的结果；409 时带服务端当前 revision */
+export interface BotConfigWriteResult {
+    ok: boolean;
+    status: number;
+    revision?: number;
+    error?: string;
+}
+
+/** GET /config/bots：全部账号的服务端配置摘要；失败返回 null */
+export async function listServerBots(
+    cfg: KbServiceConfig,
+    fetchImpl: FetchLike = fetch,
+): Promise<ServerBotSummary[] | null> {
+    const data = await requestJson(
+        cfg,
+        '/config/bots',
+        { method: 'GET', headers: { 'x-bot-token': String(cfg.token || '') } },
+        fetchImpl,
+    );
+    if (!Array.isArray(data)) return null;
+    const bots: ServerBotSummary[] = [];
+    for (const item of data) {
+        if (!isObject(item)) continue;
+        const uin = typeof item.uin === 'string' ? item.uin.trim() : (typeof item.uin === 'number' ? String(item.uin) : '');
+        if (!uin) continue;
+        bots.push({
+            uin,
+            nickname: typeof item.nickname === 'string' ? item.nickname : '',
+            revision: typeof item.revision === 'number' ? item.revision : 0,
+            updatedAt: typeof item.updatedAt === 'string' ? item.updatedAt : undefined,
+        });
+    }
+    return bots;
+}
+
+/** GET /config/bots/:uin：单个账号配置；无记录/形状不对/网络失败一律 null */
+export async function fetchBotConfig(
+    cfg: KbServiceConfig,
+    uin: string,
+    fetchImpl: FetchLike = fetch,
+): Promise<ServerBotConfigPayload | null> {
+    const data = await requestJson(
+        cfg,
+        '/config/bots/' + encodeURIComponent(uin),
+        { method: 'GET', headers: { 'x-bot-token': String(cfg.token || '') } },
+        fetchImpl,
+    );
+    if (!isObject(data) || !isObject(data.config)) return null;
+    const revision = typeof data.revision === 'number' ? data.revision : 0;
+    if (revision <= 0) return null;
+    return {
+        uin: typeof data.uin === 'string' ? data.uin : uin,
+        nickname: typeof data.nickname === 'string' ? data.nickname : '',
+        config: data.config,
+        revision,
+    };
+}
+
+/**
+ * POST /config/bots/:uin/import：以本地配置为种子做幂等导入（服务端仅在没有记录时写入）。
+ * 返回 true 只代表服务端 2xx 且响应是 JSON；失败一律 false，绝不抛错。
+ */
+export async function importBotConfig(
+    cfg: KbServiceConfig,
+    uin: string,
+    config: unknown,
+    fetchImpl: FetchLike = fetch,
+): Promise<boolean> {
+    const data = await requestJson(
+        cfg,
+        '/config/bots/' + encodeURIComponent(uin) + '/import',
+        {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', 'x-bot-token': String(cfg.token || '') },
+            body: JSON.stringify({ config }),
+        },
+        fetchImpl,
+    );
+    return isObject(data);
+}
+
+/**
+ * PUT /config/bots/:uin：写入整份配置（expectedRevision 缺省 = 无条件写）。
+ * 2xx 返回 {ok:true, revision}；409 保留服务端当前 revision；其余失败带错误信息。绝不抛错。
+ */
+export async function putBotConfig(
+    cfg: KbServiceConfig,
+    uin: string,
+    config: unknown,
+    expectedRevision?: number,
+    fetchImpl: FetchLike = fetch,
+): Promise<BotConfigWriteResult> {
+    if (!cfg?.baseUrl || !cfg.token) return { ok: false, status: 503, error: '未配置服务地址或令牌' };
+    const body: Record<string, unknown> = { config };
+    if (typeof expectedRevision === 'number' && Number.isFinite(expectedRevision) && expectedRevision > 0) {
+        body.expectedRevision = expectedRevision;
+    }
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutOf(cfg));
+    try {
+        const res = await fetchImpl(endpoint(cfg.baseUrl, '/config/bots/' + encodeURIComponent(uin)), {
+            method: 'PUT',
+            headers: { 'content-type': 'application/json', 'x-bot-token': String(cfg.token || '') },
+            body: JSON.stringify(body),
+            signal: controller.signal,
+        });
+        const text = await res.text();
+        let data: unknown = null;
+        try {
+            data = JSON.parse(text) as unknown;
+        } catch { /* 非 JSON 响应体，按原样处理 */ }
+        const rec = isObject(data) ? data : {};
+        if (!res.ok) {
+            return {
+                ok: false,
+                status: res.status,
+                revision: typeof rec.revision === 'number' ? rec.revision : undefined,
+                error: typeof rec.error === 'string' && rec.error ? rec.error : 'HTTP ' + res.status,
+            };
+        }
+        if (typeof rec.revision !== 'number') return { ok: false, status: 502, error: '服务端返回缺少 revision' };
+        return { ok: true, status: res.status, revision: rec.revision };
+    } catch (e) {
+        const aborted = (e as { name?: unknown } | null)?.name === 'AbortError';
+        return {
+            ok: false,
+            status: aborted ? 504 : 502,
+            error: aborted ? '请求超时' : (e instanceof Error ? e.message : String(e)),
+        };
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
 export interface KeywordReportItem {
     key: string;
     count: number;

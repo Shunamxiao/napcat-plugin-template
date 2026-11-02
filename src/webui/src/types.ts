@@ -12,6 +12,45 @@ export interface PluginStatus {
         faqHit?: number
         faqMiss?: number
     }
+    /** 当前实例 QQ 号；未取到为 null */
+    selfId?: string | null
+    /** 当前账号昵称（get_login_info → 服务端 nickname → ""） */
+    nickname?: string
+    /** 实例名（账号管理插件按 uin 匹配，匹配不到为 ""） */
+    instanceName?: string
+    /** 当前实例 WebUI 端口；取不到为 null */
+    webuiPort?: number | null
+    /** 当前配置 revision（本地起跑未同步为 0） */
+    configRevision?: number
+    /** 配置来源 */
+    configSource?: 'server' | 'local'
+}
+
+/** 账号管理插件实例（/api/peers 的一条） */
+export interface PeerInfo {
+    uin: string
+    name: string
+    webuiPort: number | null
+    running: boolean
+    isLogin: boolean
+}
+
+/** 服务端 bot 配置摘要（/api/server-bots 的一条） */
+export interface ServerBotSummary {
+    uin: string
+    nickname: string
+    revision: number
+    updatedAt?: string
+}
+
+/** 账号下拉合并后的一条：服务端 bot 列表 ∪ 插件实例列表 */
+export interface AccountEntry {
+    uin: string
+    name: string
+    running: boolean
+    isLogin: boolean
+    /** 服务端配置 revision；该号还没上服务端为 null */
+    revision: number | null
 }
 
 export interface GuardConfigView {

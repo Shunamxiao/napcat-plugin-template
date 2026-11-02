@@ -1,0 +1,295 @@
+/**
+ * 服务端 bot 配置（bot_config）同步与保存代理自测（假 ctx + 假 fetch，不发真实请求）
+ *
+ * 覆盖（派发单验收第 4 条）：
+ *   1) 服务端不可达 → 完全按本地配置跑（行为不变、configSource=local），只 warn 一条不轰炸
+ *   2) 启动同步 → 应用服务端配置并回写本地缓存；掩码 token 换回本地真值
+ *   3) revision 未变不重复应用；变了才应用
+ *   4) 保存代理 409 → 提示「配置已被其他端修改，请刷新后重试」且不覆盖本地
+ *   5) 保存代理成功 → 整份合并配置 PUT 服务端，当前实例补丁同步落本地
+ *   6) /api/peers 转发（失败 {peers:[]}）与 /api/status 六个新字段
+ *
+ * 用法：先 pnpm build，再 node --test test/*.mjs
+ */
+
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import {
+    getBotConfigStatus,
+    pluginState,
+    registerApiRoutes,
+    stopServerConfigSync,
+    syncBotConfig,
+} from "../dist/index.mjs";
+
+const SELF = "1457278554";
+const TOKEN = "realsecret";
+
+const dir = fs.mkdtempSync(path.join(os.tmpdir(), "autoreply-bot-config-"));
+const configPath = path.join(dir, "config.json");
+const baseConfig = {
+    enabled: true,
+    cooldownSeconds: 0,
+    replyDelayMinMs: 0,
+    replyDelayMaxMs: 0,
+    atOnly: false,
+    private: { enabled: true, defaultReply: "普通私聊兜底", whitelist: [], mergeWindowMs: 0 },
+    group: { enabled: true, whitelist: [] },
+    fallback: { privateText: "local-v1", groupAtText: "普通群兜底" },
+    collect: { enabled: false, questions: [] },
+    relay: { token: "" },
+    kbService: { enabled: true, baseUrl: "https://svc.test", token: TOKEN, timeoutMs: 500 },
+    aiTrigger: { private: true, groupAtOnly: true },
+    guard: { enabled: false },
+    keywords: [],
+};
+fs.writeFileSync(configPath, JSON.stringify(baseConfig));
+
+const logs = [];
+const ctx = {
+    pluginName: "napcat-plugin-autoreply",
+    pluginPath: dir,
+    dataPath: path.join(dir, "data"),
+    configPath,
+    adapterName: "onebot11",
+    logger: {
+        info: (...args) => { logs.push(args.join(" ")); },
+        debug: (...args) => { logs.push(args.join(" ")); },
+        warn: (...args) => { logs.push(args.join(" ")); },
+        error: (...args) => { logs.push(args.join(" ")); },
+    },
+    actions: {
+        call: async (action) => {
+            if (action === "get_login_info") return { user_id: SELF, nickname: "测试昵称" };
+            return {};
+        },
+    },
+    pluginManager: { config: { self_id: SELF } },
+};
+
+// 假路由器：捕获注册的处理器
+const routes = new Map();
+ctx.router = {
+    get: (p, h) => routes.set("AUTH GET " + p, h),
+    post: (p, h) => routes.set("AUTH POST " + p, h),
+    getNoAuth: (p, h) => routes.set("GET " + p, h),
+    postNoAuth: (p, h) => routes.set("POST " + p, h),
+    static: () => {},
+    staticOnMem: () => {},
+    page: () => {},
+};
+
+const makeRes = () => ({
+    statusCode: 200,
+    body: null,
+    status(c) { this.statusCode = c; return this; },
+    json(b) { this.body = b; return this; },
+});
+const call = async (key, req) => {
+    const handler = routes.get(key);
+    assert.ok(handler, "路由未注册：" + key);
+    const res = makeRes();
+    await handler({ query: {}, params: {}, headers: {}, body: null, ...req }, res, () => {});
+    return res;
+};
+
+const originalFetch = globalThis.fetch;
+const jsonRes = (data, status = 200) => new Response(JSON.stringify(data), { status });
+
+// 服务端 mock 状态：GET /config/bots/<SELF> 返回的记录
+let serverRecord = null;
+let putCalls = [];
+
+globalThis.fetch = async (url, init = {}) => {
+    const u = String(url);
+    const method = String(init.method || "GET").toUpperCase();
+    if (u.includes("/config/bots/" + SELF + "/import")) {
+        if (!serverRecord) serverRecord = { uin: SELF, nickname: "", revision: 1, config: JSON.parse(init.body).config };
+        return jsonRes({ revision: serverRecord.revision, imported: false });
+    }
+    if (u.includes("/config/bots/" + SELF) && method === "GET") {
+        if (!serverRecord) return new Response("{}", { status: 404 });
+        return jsonRes(serverRecord);
+    }
+    if (u.includes("/config/bots/" + SELF) && method === "PUT") {
+        putCalls.push({ url: u, body: JSON.parse(init.body) });
+        if (putConflictOnce) return jsonRes({ error: "revision conflict", revision: 7 }, 409);
+        return jsonRes({ revision: 5 });
+    }
+    if (u.includes("/config/bots")) {
+        if (method === "GET") {
+            return jsonRes(serverRecord ? [serverRecord] : []);
+        }
+    }
+    if (u.includes("/plugin/napcat-plugin-account/api/instances")) {
+        if (!u.includes("127.0.0.1:6099/")) throw new TypeError("fetch failed（该端口无账号插件）");
+        return jsonRes([
+            { uin: Number(SELF), name: "acc-main", webuiPort: 6099, running: true, isLogin: true },
+            { uin: 2622011721, name: "acc-second", webuiPort: 6103, running: false, isLogin: false },
+        ]);
+    }
+    throw new TypeError("fetch failed（mock 未覆盖 " + method + " " + u + "）");
+};
+
+let putConflictOnce = false;
+
+pluginState.init(ctx);
+await new Promise((resolve) => setTimeout(resolve, 50));
+assert.equal(pluginState.selfId, SELF, "前置：selfId 应已取得");
+const cfg = () => pluginState.config;
+
+// ---------- 1) 服务端不可达 → 本地配置 ----------
+serverRecord = null;
+putConflictOnce = false;
+logs.length = 0;
+await syncBotConfig(true);
+assert.equal(getBotConfigStatus().source, "local", "不可达时 configSource 应为 local");
+assert.equal(getBotConfigStatus().revision, 0, "不可达时 revision 应为 0");
+assert.equal(cfg().fallback.privateText, "local-v1", "不可达时应保留本地配置");
+assert.ok(getBotConfigStatus().lastError, "不可达时应记录 lastError");
+await syncBotConfig(false);
+assert.equal(
+    logs.filter((l) => l.includes("[配置] 服务端同步失败，按本地配置继续")).length, 1,
+    "不可达只应 warn 一条（不重试轰炸）",
+);
+assert.ok(logs.some((l) => l.includes("[配置] 服务端同步仍失败")), "第二次失败应降级为 debug");
+console.log("ok 1 - 服务端不可达：按本地配置跑，只 warn 一条");
+
+// ---------- 2) 启动同步：应用服务端配置 + 回写本地缓存 + 掩码 token 换真值 ----------
+serverRecord = {
+    uin: SELF,
+    nickname: "主号",
+    revision: 3,
+    config: {
+        ...baseConfig,
+        cooldownSeconds: 12,
+        fallback: { privateText: "server-v1", groupAtText: "普通群兜底" },
+        kbService: { enabled: true, baseUrl: "https://svc.test", token: "••••••", timeoutMs: 500 },
+    },
+};
+logs.length = 0;
+await syncBotConfig(true);
+assert.equal(cfg().fallback.privateText, "server-v1", "应应用服务端配置");
+assert.equal(cfg().kbService.token, TOKEN, "掩码 token 应换回本地真值");
+assert.equal(getBotConfigStatus().source, "server");
+assert.equal(getBotConfigStatus().revision, 3);
+assert.ok(logs.some((l) => l.includes("[配置] 从服务端同步 revision=3")), "应打同步日志");
+const onDisk = JSON.parse(fs.readFileSync(configPath, "utf-8"));
+assert.equal(onDisk.fallback.privateText, "server-v1", "应回写本地缓存（落盘）");
+assert.equal(getBotConfigStatus().serverNickname, "主号", "应记录服务端 nickname");
+console.log("ok 2 - 启动同步应用服务端配置并回写本地缓存");
+
+// ---------- 3) revision 未变不重复应用；变了才应用 ----------
+pluginState.updateConfig({ cooldownSeconds: 77 });
+logs.length = 0;
+await syncBotConfig(false);
+assert.equal(cfg().cooldownSeconds, 77, "revision 未变不应覆盖本地编辑");
+assert.ok(!logs.some((l) => l.includes("[配置] 从服务端同步")), "revision 未变不应打同步日志");
+
+serverRecord = { ...serverRecord, revision: 4, config: { ...serverRecord.config, cooldownSeconds: 55 } };
+await syncBotConfig(false);
+assert.equal(cfg().cooldownSeconds, 55, "revision 变了应重新应用");
+assert.equal(getBotConfigStatus().revision, 4);
+console.log("ok 3 - revision 比对生效（变了才应用）");
+
+// ---------- 路由前置：注册 API ----------
+registerApiRoutes(ctx);
+
+// ---------- 4) 保存代理 409：提示且不覆盖本地 ----------
+putConflictOnce = true;
+let res = await call("AUTH POST /server-config", {
+    body: { uin: SELF, config: { cooldownSeconds: 99 }, expectedRevision: 4 },
+});
+assert.equal(res.statusCode, 409, "409 应原样回给页面");
+assert.equal(res.body.message, "配置已被其他端修改，请刷新后重试", "409 文案应符合契约");
+assert.equal(res.body.data.revision, 7, "409 应带服务端当前 revision");
+assert.equal(cfg().cooldownSeconds, 55, "409 时不应覆盖本地配置");
+putConflictOnce = false;
+putCalls = [];
+console.log("ok 4 - 409 提示且不覆盖本地");
+
+// ---------- 5) 保存代理成功：整份合并 PUT + 当前实例落本地 ----------
+logs.length = 0;
+res = await call("AUTH POST /server-config", {
+    body: { uin: SELF, config: { cooldownSeconds: 99 }, expectedRevision: 4 },
+});
+assert.equal(res.statusCode, 200);
+assert.equal(res.body.code, 0);
+assert.equal(res.body.data.revision, 5);
+assert.equal(cfg().cooldownSeconds, 99, "当前实例保存应立即生效");
+assert.equal(putCalls.length, 1, "应恰好 PUT 一次服务端");
+assert.equal(putCalls[0].body.config.fallback.privateText, "server-v1", "PUT 应是整份合并配置而非补丁");
+assert.equal(putCalls[0].body.expectedRevision, 4, "PUT 应带 expectedRevision");
+assert.ok(logs.some((l) => l.includes("[配置] 已保存到服务端 uin=" + SELF)), "应打保存日志");
+
+// 其他实例：以服务端该号配置为基底合并，不动本地
+putCalls = [];
+serverRecord = {
+    uin: "2622011721",
+    nickname: "二号",
+    revision: 2,
+    config: { ...baseConfig, cooldownSeconds: 8, fallback: { privateText: "peer-v1", groupAtText: "x" } },
+};
+globalThis.fetch = (url, init = {}) => {
+    const u = String(url);
+    const method = String(init.method || "GET").toUpperCase();
+    if (u.includes("/config/bots/2622011721") && method === "GET") return jsonRes(serverRecord);
+    if (u.includes("/config/bots/2622011721") && method === "PUT") {
+        putCalls.push({ url: u, body: JSON.parse(init.body) });
+        return jsonRes({ revision: 3 });
+    }
+    throw new TypeError("fetch failed（" + method + " " + u + "）");
+};
+res = await call("AUTH POST /server-config", {
+    body: { uin: "2622011721", config: { cooldownSeconds: 20 } },
+});
+assert.equal(res.statusCode, 200);
+assert.equal(cfg().cooldownSeconds, 99, "保存其他实例不应动本地配置");
+assert.equal(putCalls[0].body.config.cooldownSeconds, 20, "合并补丁应生效");
+assert.equal(putCalls[0].body.config.fallback.privateText, "peer-v1", "应以该号服务端配置为基底");
+assert.equal(putCalls[0].body.expectedRevision, undefined, "未带 expectedRevision 时应无条件写");
+serverRecord = null;
+console.log("ok 5 - 保存代理成功链路（当前实例生效 / 其他实例写服务端）");
+
+// ---------- 6) /api/peers 与 /api/status 六字段 ----------
+globalThis.fetch = async (url) => {
+    const u = String(url);
+    if (u.includes("/plugin/napcat-plugin-account/api/instances")) {
+        if (!u.includes("127.0.0.1:6099/")) throw new TypeError("fetch failed（该端口无账号插件）");
+        return jsonRes([
+            { uin: Number(SELF), name: "acc-main", webuiPort: 6099, running: true, isLogin: true },
+        ]);
+    }
+    throw new TypeError("fetch failed");
+};
+const peersFail = await call("GET /peers", { headers: { host: "127.0.0.1:65535" } });
+assert.deepEqual(peersFail.body.data.peers, [], "端口上没有账号插件应回 {peers:[]}");
+
+const peersRes = await call("GET /peers", { headers: { host: "127.0.0.1:6099" } });
+assert.equal(peersRes.body.code, 0);
+assert.equal(peersRes.body.data.peers.length, 1);
+assert.deepEqual(peersRes.body.data.peers[0], {
+    uin: SELF, name: "acc-main", webuiPort: 6099, running: true, isLogin: true,
+}, "peers 字段应为 name/uin/webuiPort/running/isLogin");
+
+const statusRes = await call("GET /status", { headers: { host: "192.168.1.204:6099" } });
+const statusData = statusRes.body.data;
+assert.equal(statusData.selfId, SELF, "status.selfId");
+assert.equal(statusData.nickname, "测试昵称", "status.nickname 应来自 get_login_info");
+assert.equal(statusData.instanceName, "acc-main", "status.instanceName 应按 uin 匹配账号插件");
+assert.equal(statusData.webuiPort, 6099, "status.webuiPort 应来自 Host 头");
+assert.equal(statusData.configRevision, getBotConfigStatus().revision, "status.configRevision");
+assert.ok(["server", "local"].includes(statusData.configSource), "status.configSource 取值");
+
+const botsRes = await call("GET /server-bots", {});
+assert.equal(botsRes.body.code, 0);
+assert.deepEqual(botsRes.body.data.bots, [], "服务端未配置时 bots 应回空数组");
+console.log("ok 6 - /api/peers 转发与 /api/status 六字段");
+
+// ---------- 清理 ----------
+stopServerConfigSync();
+globalThis.fetch = originalFetch;
+fs.rmSync(dir, { recursive: true, force: true });
+console.log("\nbot-config tests passed");

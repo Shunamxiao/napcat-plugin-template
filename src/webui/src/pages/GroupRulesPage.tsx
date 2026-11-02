@@ -1,14 +1,14 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { noAuthFetch } from '../utils/api'
+import { fetchBotConfigView, noAuthFetch, saveBotConfig } from '../utils/api'
 import { showToast } from '../hooks/useToast'
+import { useAccount } from '../hooks/useAccount'
 import type {
     GroupDefaultView,
     GroupMode,
     GroupRuleEntry,
     GroupsResponse,
     HitLogEntry,
-    MissPolicy,
-    PluginConfigView
+    MissPolicy
 } from '../types'
 
 const MODE_OPTIONS: { value: GroupMode; label: string; hint: string }[] = [
@@ -46,6 +46,7 @@ const SOURCE_HINT: Record<GroupRuleEntry['source'], string> = {
 
 /** 群规则：服务端为准的每群回复模式 / 未命中策略 / 兜底与欢迎配置 */
 export default function GroupRulesPage() {
+    const { selectedUin, isCurrent, configRevision } = useAccount()
     const [rows, setRows] = useState<GroupRuleEntry[]>([])
     const [known, setKnown] = useState<GroupRuleEntry[]>([])
     const [globalDefaults, setGlobalDefaults] = useState<GroupsResponse['global']>({ cooldownSeconds: 0, fallbackText: '' })
@@ -81,10 +82,15 @@ export default function GroupRulesPage() {
 
     const fetchKeywordCount = useCallback(async () => {
         try {
-            const res = await noAuthFetch<PluginConfigView>('/config')
-            if (res.code === 0 && res.data) setKeywordCount((res.data.keywords ?? []).length)
+            const view = await fetchBotConfigView(selectedUin, isCurrent)
+            setKeywordCount((view.config.keywords ?? []).length)
+            // 编辑其他实例时，「群默认（未配置群）」卡片按该号服务端配置回显
+            const remoteDefault = view.config.groupDefault as Partial<GroupDefaultView> | undefined
+            if (!isCurrent && remoteDefault) {
+                setGroupDefault({ ...DEFAULT_GROUP, ...remoteDefault })
+            }
         } catch { /* 摘要非关键数据，失败不打扰 */ }
-    }, [])
+    }, [selectedUin, isCurrent])
 
     const fetchLogs = useCallback(async () => {
         try {
@@ -193,18 +199,16 @@ export default function GroupRulesPage() {
     const saveGroupDefault = async () => {
         setSavingDefault(true)
         try {
-            const res = await noAuthFetch('/config', {
-                method: 'POST',
-                body: JSON.stringify({
-                    groupDefault: {
-                        ...groupDefault,
-                        cooldownSeconds: groupDefault.cooldownSeconds === null ? null : Number(groupDefault.cooldownSeconds),
-                        fallbackText: groupDefault.fallbackText && groupDefault.fallbackText.trim() ? groupDefault.fallbackText : null
-                    }
-                })
-            })
-            if (res.code !== 0) throw new Error(res.message || '保存失败')
-            showToast('未配置群默认策略已保存', 'success')
+            // groupDefault 属于账号配置：走保存代理（当前实例同时落本地，其他实例写服务端）
+            const result = await saveBotConfig({
+                groupDefault: {
+                    ...groupDefault,
+                    cooldownSeconds: groupDefault.cooldownSeconds === null ? null : Number(groupDefault.cooldownSeconds),
+                    fallbackText: groupDefault.fallbackText && groupDefault.fallbackText.trim() ? groupDefault.fallbackText : null
+                }
+            }, selectedUin, isCurrent ? configRevision : null)
+            if (!result.ok) throw new Error(result.message)
+            showToast(isCurrent ? '未配置群默认策略已保存' : '已保存到服务端，该号下次同步后生效', 'success')
             await fetchGroups()
         } catch (e) {
             showToast('保存失败：' + (e instanceof Error ? e.message : String(e)), 'error')
@@ -234,7 +238,7 @@ export default function GroupRulesPage() {
                     <div className="flex flex-wrap items-center gap-3 mb-2">
                         <h3 className="text-sm font-semibold text-gray-900 dark:text-white mr-auto">群默认（未配置群）</h3>
                         <button className="btn btn-primary text-xs" onClick={saveGroupDefault} disabled={savingDefault}>
-                            {savingDefault ? '保存中...' : '保存群默认'}
+                            {savingDefault ? '保存中...' : isCurrent ? '保存并立即生效' : '保存到服务端'}
                         </button>
                     </div>
                     <p className="text-xs text-gray-400 mb-3">

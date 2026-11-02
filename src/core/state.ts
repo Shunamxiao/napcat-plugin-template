@@ -361,6 +361,70 @@ export function sanitizeConfig(raw: unknown): PluginConfig {
 
 // ==================== 插件全局状态类 ====================
 
+/**
+ * 合并一个配置补丁到现有配置上（页面保存 / 服务端保存代理共用同一套合并语义）。
+ * 嵌套对象先与旧值合并,防止部分更新时静默丢失未提交字段(如 private.whitelist)。
+ * 返回清洗后的完整配置，不落盘。
+ */
+export function applyConfigPatch(current: PluginConfig, patch: Partial<PluginConfig>): PluginConfig {
+    const merged = { ...current, ...patch };
+    if (patch.private) merged.private = { ...current.private, ...patch.private };
+    if (patch.group) merged.group = { ...current.group, ...patch.group };
+    if (patch.groupWelcome) {
+        merged.groupWelcome = {
+            enabled: current.groupWelcome?.enabled ?? false,
+            template: current.groupWelcome?.template ?? '',
+            ...patch.groupWelcome,
+        };
+    }
+    if (patch.friendRequest) {
+        merged.friendRequest = {
+            autoAccept: current.friendRequest?.autoAccept ?? false,
+            ...patch.friendRequest,
+        };
+    }
+    if (patch.fallback) {
+        merged.fallback = {
+            privateText: current.fallback?.privateText ?? '',
+            groupAtText: current.fallback?.groupAtText ?? '',
+            ...patch.fallback,
+        };
+    }
+    if (patch.collect) merged.collect = { ...current.collect, ...patch.collect };
+    if (patch.relay) merged.relay = { ...current.relay, ...patch.relay };
+    if (patch.sendGuard) merged.sendGuard = { ...current.sendGuard, ...patch.sendGuard };
+    if (patch.guard) merged.guard = { ...current.guard, ...patch.guard };
+    // 群级规则文本:合法 JSON 才覆盖结构化规则,非法文本忽略
+    if (typeof patch.groupRulesText === 'string') {
+        const parsed = textToGroupRules(patch.groupRulesText);
+        if (parsed) merged.groupRules = parsed;
+    }
+    // 知识库/AI 相关嵌套对象同样先合并旧值，避免部分提交时丢字段
+    if (patch.kbService) {
+        assertEndpointChangeSafe(current.kbService, patch.kbService);
+        merged.kbService = { ...current.kbService, ...patch.kbService };
+        // 空串 / 占位符 / 未提交 = 保持原令牌；只有新值才覆盖
+        if (isTokenPlaceholder(patch.kbService.token)) {
+            merged.kbService.token = current.kbService.token;
+        }
+    }
+    if (patch.aiTrigger) merged.aiTrigger = { ...current.aiTrigger, ...patch.aiTrigger };
+    if (patch.groupDefault) {
+        merged.groupDefault = {
+            ...(current.groupDefault ?? DEFAULT_CONFIG.groupDefault!),
+            ...patch.groupDefault,
+        };
+    }
+    if (patch.blocklist) {
+        merged.blocklist = {
+            ...current.blocklist,
+            ...patch.blocklist,
+            users: Array.isArray(patch.blocklist.users) ? patch.blocklist.users : current.blocklist.users,
+        };
+    }
+    return sanitizeConfig(merged);
+}
+
 class PluginState {
     /** NapCat 插件上下文（init 后可用） */
     private _ctx: NapCatPluginContext | null = null;
@@ -568,63 +632,7 @@ class PluginState {
      * 合并更新配置
      */
     updateConfig(partial: Partial<PluginConfig>): void {
-        // 嵌套对象先与旧值合并,防止部分更新时静默丢失未提交字段(如 private.whitelist)
-        const merged = { ...this.config, ...partial };
-        if (partial.private) merged.private = { ...this.config.private, ...partial.private };
-        if (partial.group) merged.group = { ...this.config.group, ...partial.group };
-        if (partial.groupWelcome) {
-            merged.groupWelcome = {
-                enabled: this.config.groupWelcome?.enabled ?? false,
-                template: this.config.groupWelcome?.template ?? '',
-                ...partial.groupWelcome,
-            };
-        }
-        if (partial.friendRequest) {
-            merged.friendRequest = {
-                autoAccept: this.config.friendRequest?.autoAccept ?? false,
-                ...partial.friendRequest,
-            };
-        }
-        if (partial.fallback) {
-            merged.fallback = {
-                privateText: this.config.fallback?.privateText ?? '',
-                groupAtText: this.config.fallback?.groupAtText ?? '',
-                ...partial.fallback,
-            };
-        }
-        if (partial.collect) merged.collect = { ...this.config.collect, ...partial.collect };
-        if (partial.relay) merged.relay = { ...this.config.relay, ...partial.relay };
-        if (partial.sendGuard) merged.sendGuard = { ...this.config.sendGuard, ...partial.sendGuard };
-        if (partial.guard) merged.guard = { ...this.config.guard, ...partial.guard };
-        // 群级规则文本:合法 JSON 才覆盖结构化规则,非法文本忽略
-        if (typeof partial.groupRulesText === 'string') {
-            const parsed = textToGroupRules(partial.groupRulesText);
-            if (parsed) merged.groupRules = parsed;
-        }
-        // 知识库/AI 相关嵌套对象同样先合并旧值，避免部分提交时丢字段
-        if (partial.kbService) {
-            assertEndpointChangeSafe(this.config.kbService, partial.kbService);
-            merged.kbService = { ...this.config.kbService, ...partial.kbService };
-            // 空串 / 占位符 / 未提交 = 保持原令牌；只有新值才覆盖
-            if (isTokenPlaceholder(partial.kbService.token)) {
-                merged.kbService.token = this.config.kbService.token;
-            }
-        }
-        if (partial.aiTrigger) merged.aiTrigger = { ...this.config.aiTrigger, ...partial.aiTrigger };
-        if (partial.groupDefault) {
-            merged.groupDefault = {
-                ...(this.config.groupDefault ?? DEFAULT_CONFIG.groupDefault!),
-                ...partial.groupDefault,
-            };
-        }
-        if (partial.blocklist) {
-            merged.blocklist = {
-                ...this.config.blocklist,
-                ...partial.blocklist,
-                users: Array.isArray(partial.blocklist.users) ? partial.blocklist.users : this.config.blocklist.users,
-            };
-        }
-        this.config = sanitizeConfig(merged);
+        this.config = applyConfigPatch(this.config, partial);
         this.saveConfig();
     }
 

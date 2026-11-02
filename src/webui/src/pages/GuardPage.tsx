@@ -1,32 +1,35 @@
 import { useCallback, useEffect, useState } from 'react'
-import { noAuthFetch } from '../utils/api'
+import { fetchBotConfigView, noAuthFetch, saveBotConfig } from '../utils/api'
 import { showToast } from '../hooks/useToast'
+import { useAccount } from '../hooks/useAccount'
 import type { GuardPolicy, PluginConfigView } from '../types'
 
-/** 守卫与处罚：屏蔽词/命中动作（本地）+ 处罚策略（服务端） */
+/** 守卫与处罚：屏蔽词/命中动作（随账号配置）+ 处罚策略（服务端全局） */
 export default function GuardPage() {
+    const { selectedUin, isCurrent, configRevision } = useAccount()
     const [config, setConfig] = useState<PluginConfigView | null>(null)
     const [policy, setPolicy] = useState<GuardPolicy | null>(null)
     const [words, setWords] = useState('')
     const [action, setAction] = useState<'recall' | 'warn' | 'both'>('recall')
     const [saving, setSaving] = useState(false)
+    /** 编辑基底的服务端 revision（其他实例时用） */
+    const [editRevision, setEditRevision] = useState<number | null>(null)
 
     const fetchAll = useCallback(async () => {
         try {
-            const [cfgRes, policyRes] = await Promise.all([
-                noAuthFetch<PluginConfigView>('/config'),
+            const [view, policyRes] = await Promise.all([
+                fetchBotConfigView(selectedUin, isCurrent),
                 noAuthFetch<GuardPolicy>('/guard-policy')
             ])
-            if (cfgRes.code === 0 && cfgRes.data) {
-                setConfig(cfgRes.data)
-                setWords((cfgRes.data.guard?.words ?? []).join('\n'))
-                setAction(cfgRes.data.guard?.action ?? 'recall')
-            }
+            setConfig(view.config)
+            setEditRevision(view.revision)
+            setWords((view.config.guard?.words ?? []).join('\n'))
+            setAction(view.config.guard?.action ?? 'recall')
             if (policyRes.code === 0 && policyRes.data) setPolicy(policyRes.data)
         } catch {
             showToast('获取守卫配置失败', 'error')
         }
-    }, [])
+    }, [selectedUin, isCurrent])
 
     useEffect(() => { fetchAll() }, [fetchAll])
 
@@ -36,33 +39,34 @@ export default function GuardPage() {
     }
 
     const save = async () => {
-        if (!policy || !config) return
+        if (!policy || !config || !selectedUin) return
         setSaving(true)
         try {
             const wordList = words.split('\n').map((line) => line.trim()).filter(Boolean)
-            await noAuthFetch('/config', {
-                method: 'POST',
-                body: JSON.stringify({
-                    guard: {
-                        words: wordList,
-                        action,
-                        // 本地兜底警告文案跟服务端策略保持一致，服务不可达时仍能用
-                        warnText: policy.warnText
-                    }
+            const result = await saveBotConfig({
+                guard: {
+                    words: wordList,
+                    action,
+                    // 本地兜底警告文案跟服务端策略保持一致，服务不可达时仍能用
+                    warnText: policy.warnText
+                }
+            }, selectedUin, isCurrent ? configRevision : editRevision)
+            if (!result.ok) throw new Error(result.message)
+            // 处罚策略是服务端全局状态，与账号无关；编辑其他实例时不顺手动它
+            if (isCurrent) {
+                const res = await noAuthFetch<GuardPolicy>('/guard-policy', {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        windowSeconds: policy.windowSeconds,
+                        threshold: policy.threshold,
+                        muteSeconds: policy.muteSeconds,
+                        warnText: policy.warnText,
+                        muteText: policy.muteText
+                    })
                 })
-            })
-            const res = await noAuthFetch<GuardPolicy>('/guard-policy', {
-                method: 'POST',
-                body: JSON.stringify({
-                    windowSeconds: policy.windowSeconds,
-                    threshold: policy.threshold,
-                    muteSeconds: policy.muteSeconds,
-                    warnText: policy.warnText,
-                    muteText: policy.muteText
-                })
-            })
-            if (res.code !== 0) throw new Error(res.message || '处罚策略保存失败')
-            showToast('守卫与处罚已保存', 'success')
+                if (res.code !== 0) throw new Error(res.message || '处罚策略保存失败')
+            }
+            showToast(isCurrent ? '守卫与处罚已保存' : '已保存到服务端，该号下次同步后生效', 'success')
             await fetchAll()
         } catch (e) {
             showToast('保存失败：' + (e instanceof Error ? e.message : String(e)), 'error')
@@ -169,7 +173,7 @@ export default function GuardPage() {
 
             <div className="flex justify-end">
                 <button className="btn btn-primary" onClick={save} disabled={saving}>
-                    {saving ? '保存中...' : '保存守卫与处罚'}
+                    {saving ? '保存中...' : isCurrent ? '保存并立即生效' : '保存到服务端'}
                 </button>
             </div>
         </div>

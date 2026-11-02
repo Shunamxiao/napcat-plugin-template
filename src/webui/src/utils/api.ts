@@ -1,4 +1,4 @@
-import type { ApiResponse } from '../types'
+import type { ApiResponse, PluginConfigView } from '../types'
 
 function resolvePluginName(): string {
     if (window.__PLUGIN_NAME__) return window.__PLUGIN_NAME__
@@ -63,4 +63,71 @@ export async function authFetch<T = unknown>(path: string, options: RequestInit 
         throw new Error(text || `HTTP ${res.status}`)
     }
     return res.json()
+}
+
+export interface SaveBotConfigResult {
+    ok: boolean
+    /** true = 服务端 409 冲突，需要刷新后重试 */
+    conflict?: boolean
+    message: string
+}
+
+/**
+ * 保存机器人配置：走后端鉴权写代理（POST /api/server-config）。
+ * 后端把补丁与目标实例现有配置合并后整份 PUT 服务端；当前实例同时落本地。
+ * 409 时返回 conflict=true，文案固定「配置已被其他端修改，请刷新后重试」。
+ */
+export async function saveBotConfig(
+    patch: Record<string, unknown>,
+    uin: string,
+    expectedRevision?: number | null
+): Promise<SaveBotConfigResult> {
+    try {
+        const res = await fetch(buildUrl(API_BASE_AUTH, '/server-config'), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', ...authHeaders() },
+            body: JSON.stringify({
+                uin,
+                config: patch,
+                expectedRevision: expectedRevision ?? undefined
+            })
+        })
+        const text = await res.text()
+        let data: { message?: string; error?: string } | null = null
+        try { data = JSON.parse(text) } catch { /* 非 JSON 错误体 */ }
+        if (res.status === 409) {
+            return { ok: false, conflict: true, message: '配置已被其他端修改，请刷新后重试' }
+        }
+        if (!res.ok) {
+            return { ok: false, message: data?.message || data?.error || `HTTP ${res.status}` }
+        }
+        return { ok: true, message: 'ok' }
+    } catch (e) {
+        return { ok: false, message: e instanceof Error ? e.message : String(e) }
+    }
+}
+
+/** fetchBotConfigView 的返回：config 是编辑基底，revision 供保存时带 expectedRevision */
+export interface BotConfigViewResult {
+    config: PluginConfigView
+    /** 当前实例来自本地缓存（无 revision 概念）时为 null */
+    revision: number | null
+}
+
+/**
+ * 读取编辑用配置：当前实例走本地 /config；其他实例走服务端只读代理 /server-config?uin=。
+ * 编辑其他实例必须以该号服务端配置为基底，防止把本实例配置覆盖过去。
+ */
+export async function fetchBotConfigView(uin: string, isCurrent: boolean): Promise<BotConfigViewResult> {
+    if (isCurrent) {
+        const res = await noAuthFetch<PluginConfigView>('/config')
+        if (res.code !== 0 || !res.data) throw new Error(res.message || '返回为空')
+        return { config: res.data, revision: null }
+    }
+    const res = await fetch(buildUrl(API_BASE_NO_AUTH, '/server-config?uin=' + encodeURIComponent(uin)))
+    const body = await res.json() as ApiResponse<{ config: PluginConfigView; revision: number }> & { error?: string }
+    if (!res.ok || body.code !== 0 || !body.data) {
+        throw new Error(body.error || body.message || `HTTP ${res.status}`)
+    }
+    return { config: body.data.config, revision: body.data.revision }
 }

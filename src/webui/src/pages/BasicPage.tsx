@@ -1,21 +1,26 @@
 import { useCallback, useEffect, useState } from 'react'
-import { noAuthFetch } from '../utils/api'
+import { fetchBotConfigView, saveBotConfig } from '../utils/api'
 import { showToast } from '../hooks/useToast'
+import { useAccount } from '../hooks/useAccount'
 import type { PluginConfigView } from '../types'
 
-/** 基础回复：总开关、冷却、延迟与 @ 相关设置（保存到本地插件配置） */
+/** 基础回复：总开关、冷却、延迟与 @ 相关设置（当前实例保存并立即生效；其他实例保存到服务端） */
 export default function BasicPage() {
+    const { selectedUin, isCurrent, configRevision } = useAccount()
     const [config, setConfig] = useState<PluginConfigView | null>(null)
     const [saving, setSaving] = useState(false)
+    /** 编辑基底的服务端 revision（其他实例时用） */
+    const [editRevision, setEditRevision] = useState<number | null>(null)
 
     const fetchConfig = useCallback(async () => {
         try {
-            const res = await noAuthFetch<PluginConfigView>('/config')
-            if (res.code === 0 && res.data) setConfig(res.data)
+            const view = await fetchBotConfigView(selectedUin, isCurrent)
+            setConfig(view.config)
+            setEditRevision(view.revision)
         } catch {
             showToast('获取配置失败', 'error')
         }
-    }, [])
+    }, [selectedUin, isCurrent])
 
     useEffect(() => { fetchConfig() }, [fetchConfig])
 
@@ -25,21 +30,19 @@ export default function BasicPage() {
     }
 
     const save = async () => {
-        if (!config) return
+        if (!config || !selectedUin) return
         setSaving(true)
         try {
-            await noAuthFetch('/config', {
-                method: 'POST',
-                body: JSON.stringify({
-                    enabled: config.enabled,
-                    cooldownSeconds: config.cooldownSeconds,
-                    replyDelayMinMs: config.replyDelayMinMs,
-                    replyDelayMaxMs: config.replyDelayMaxMs,
-                    atOnly: config.atOnly,
-                    atReply: config.atReply === true
-                })
-            })
-            showToast('配置已保存', 'success')
+            const result = await saveBotConfig({
+                enabled: config.enabled,
+                cooldownSeconds: config.cooldownSeconds,
+                replyDelayMinMs: config.replyDelayMinMs,
+                replyDelayMaxMs: config.replyDelayMaxMs,
+                atOnly: config.atOnly,
+                atReply: config.atReply === true
+            }, selectedUin, isCurrent ? configRevision : editRevision)
+            if (!result.ok) throw new Error(result.message)
+            showToast(isCurrent ? '配置已保存并立即生效' : '已保存到服务端，该号下次同步后生效', 'success')
             await fetchConfig()
         } catch (e) {
             showToast('保存失败：' + (e instanceof Error ? e.message : String(e)), 'error')
@@ -108,7 +111,7 @@ export default function BasicPage() {
 
             <div className="flex justify-end">
                 <button className="btn btn-primary" onClick={save} disabled={saving}>
-                    {saving ? '保存中...' : '保存基础配置'}
+                    {saving ? '保存中...' : isCurrent ? '保存并立即生效' : '保存到服务端'}
                 </button>
             </div>
         </div>

@@ -81,6 +81,8 @@ export const plugin_init: PluginModule['plugin_init'] = async (ctx) => {
         startGuardWordsSync();
         // 7. 服务端群配置 + 守卫处罚策略：启动拉一次，之后按 groupConfigRefreshMs 刷新
         startGroupConfigSync();
+        // 7.5 服务端 bot 配置（bot_config 真源）：启动导入 + 首轮同步，之后按 groupConfigRefreshMs 比对 revision
+        startServerConfigSync();
         // 8. 关键词命中统计：定时上报服务端，供报表统计零命中规则
         startKeywordReport();
         // 9. 流量计数：每 5 分钟批量上报 /stats/traffic
@@ -138,6 +140,7 @@ export const plugin_cleanup: PluginModule['plugin_cleanup'] = async (ctx) => {
         stopBlocklistSync();
         stopGuardWordsSync();
         stopGroupConfigSync();
+        stopServerConfigSync();
         stopKeywordReport();
         stopTrafficReport();
         clearGuardPenalty();
@@ -342,4 +345,6 @@ export { handleMessage, resolveImageSource, sendRelayMessage, clearPrivateMerge,
 export { registerApiRoutes } from './services/api-service';
 export { fetchGroupConfig } from './services/kb-client';
 export { notifyHandoff, askServiceOutcome, fetchGuardWords } from './services/kb-client';
-export { sanitizeConfig, pluginState } from './core/state';
+export { sanitizeConfig, pluginState, applyConfigPatch } from './core/state';
+export { syncBotConfig, startServerConfigSync, stopServerConfigSync, getBotConfigStatus } from './core/server-config';
+export { fetchBotConfig, importBotConfig, listServerBots, putBotConfig } from './services/kb-client';
