@@ -31,6 +31,7 @@ import { DEFAULT_CONFIG, buildConfigSchema, groupRulesToText, idListToText, keyw
 import { maskConfig, pluginState } from './core/state';
 import { buildEffectiveGroupPolicies, getGroupConfigStatus, getServerGroupConfigs, resolveEffectiveGroupPolicy, startGroupConfigSync, stopGroupConfigSync } from './core/group-config';
 import { clearGuardPenalty } from './core/guard-penalty';
+import { startServerConfigSync, stopServerConfigSync } from './core/server-config';
 import { hitLog } from './core/hit-log';
 import { initKeywordStats, shutdownKeywordStats } from './core/keyword-stats';
 import { startKeywordReport, stopKeywordReport } from './core/keyword-report';

@@ -73,6 +73,12 @@ CREATE TABLE IF NOT EXISTS bot_config (
 
 转发同进程账号管理插件的 `/plugin/napcat-plugin-account/api/instances`（取 `name/uin/webuiPort/running/isLogin` 四组字段），失败返回 `{peers:[]}`，不许抛异常。
 
+**总监补充（2026-11-02 实测裁定）**：账号插件 `/instances` 校验 `?key=<accessKey>`（`accessKey` 是账号插件自己的配置）。转发时带上凭据：
+
+- 插件配置新增可选字段 `accountAccessKey`（string，默认 `""`），env `QQBOT_ACCOUNT_ACCESS_KEY` 作为兜底来源；
+- 转发 URL 追加 `?key=<accountAccessKey>`（有值才带）；未配置时仍裸转发（会得到空 peers，不报错）；
+- `accountAccessKey` 只在插件后端使用，绝不进 `/api/*` 出口与日志。
+
 ### 2.6 兼容
 
 服务端不可达时**完全按本地配置跑**（旧行为），日志一条 warn，不重试轰炸。

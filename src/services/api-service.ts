@@ -71,8 +71,19 @@ const PEERS_TIMEOUT_MS = 4000;
 const PEERS_CACHE_MS = 10000;
 
 /**
+ * 账号插件 /instances 转发凭据：配置 accountAccessKey 优先，env QQBOT_ACCOUNT_ACCESS_KEY 兜底。
+ * 只用于转发 URL 的 ?key=，绝不进任何 /api 出口与日志（契约 §2.5 总监补充）。
+ */
+function resolveAccountAccessKey(): string {
+    const fromConfig = String(pluginState.config.accountAccessKey ?? '').trim();
+    if (fromConfig) return fromConfig;
+    return String(process.env.QQBOT_ACCOUNT_ACCESS_KEY ?? '').trim();
+}
+
+/**
  * 转发同进程账号管理插件的 /plugin/napcat-plugin-account/api/instances。
  * 只回源到本机回环地址的 WebUI 端口（从请求 Host 头解析），失败/超时一律空列表，绝不抛异常。
+ * 账号插件校验 ?key=<accessKey>：配置了 accountAccessKey 才带上，未配置时裸转发（会得到空 peers）。
  */
 async function fetchPeers(req: PluginHttpRequest): Promise<PeerInfo[]> {
     const port = portFromHost(req);
@@ -82,10 +93,13 @@ async function fetchPeers(req: PluginHttpRequest): Promise<PeerInfo[]> {
     if (cached && now - cached.at < PEERS_CACHE_MS) return cached.peers;
     const peers: PeerInfo[] = [];
     try {
+        const accessKey = resolveAccountAccessKey();
+        const target = 'http://127.0.0.1:' + port + '/plugin/napcat-plugin-account/api/instances'
+            + (accessKey ? '?key=' + encodeURIComponent(accessKey) : '');
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), PEERS_TIMEOUT_MS);
         try {
-            const res = await fetch('http://127.0.0.1:' + port + '/plugin/napcat-plugin-account/api/instances', {
+            const res = await fetch(target, {
                 signal: controller.signal,
             });
             if (res.ok) {

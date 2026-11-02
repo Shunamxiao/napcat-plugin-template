@@ -321,6 +321,8 @@ export interface PluginConfig {
     blocklist: BlocklistCacheConfig;
     /** 服务端群配置刷新间隔(毫秒)；默认 300000，服务不可用时沿用上次缓存 */
     groupConfigRefreshMs?: number;
+    /** 账号插件 /instances 转发凭据（?key=）；默认空串，env QQBOT_ACCOUNT_ACCESS_KEY 兜底；绝不进 /api 出口与日志 */
+    accountAccessKey?: string;
 }
 
 export interface ApiResponse<T = unknown> {

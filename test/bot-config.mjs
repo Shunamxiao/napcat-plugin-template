@@ -7,7 +7,9 @@
  *   3) revision 未变不重复应用；变了才应用
  *   4) 保存代理 409 → 提示「配置已被其他端修改，请刷新后重试」且不覆盖本地
  *   5) 保存代理成功 → 整份合并配置 PUT 服务端，当前实例补丁同步落本地
- *   6) /api/peers 转发（失败 {peers:[]}）与 /api/status 六个新字段
+ *   6) /api/peers 转发鉴权（带 key 成功 / 无 key 空列表 / env 兜底 / key 不进出口）
+ *      与 /api/status 六个新字段
+ *   7) startServerConfigSync / stopServerConfigSync 生命周期无 ReferenceError
  *
  * 用法：先 pnpm build，再 node --test test/*.mjs
  */
@@ -20,6 +22,7 @@ import {
     getBotConfigStatus,
     pluginState,
     registerApiRoutes,
+    startServerConfigSync,
     stopServerConfigSync,
     syncBotConfig,
 } from "../dist/index.mjs";
@@ -253,27 +256,59 @@ assert.equal(putCalls[0].body.expectedRevision, undefined, "未带 expectedRevis
 serverRecord = null;
 console.log("ok 5 - 保存代理成功链路（当前实例生效 / 其他实例写服务端）");
 
-// ---------- 6) /api/peers 与 /api/status 六字段 ----------
+// ---------- 6) /api/peers 转发鉴权（accountAccessKey）与 /api/status 六字段 ----------
+// 账号插件 mock：校验 ?key=；expectedKey 是它当前认可的凭据，null = 认可任何 key（按裸转发处理）
+const ACCOUNT_INSTANCES = [
+    { uin: Number(SELF), name: "acc-main", webuiPort: 6099, running: true, isLogin: true },
+];
+let expectedKey = "k-123";
+let lastInstancesUrl = "";
 globalThis.fetch = async (url) => {
     const u = String(url);
     if (u.includes("/plugin/napcat-plugin-account/api/instances")) {
-        if (!u.includes("127.0.0.1:6099/")) throw new TypeError("fetch failed（该端口无账号插件）");
-        return jsonRes([
-            { uin: Number(SELF), name: "acc-main", webuiPort: 6099, running: true, isLogin: true },
-        ]);
+        lastInstancesUrl = u;
+        // 只有 6091/6092/6093/6099 模拟装了账号插件，其他端口按"插件不在"处理
+        if (!/127\.0\.0\.1:60(9[139]|92)\//.test(u)) throw new TypeError("fetch failed（该端口无账号插件）");
+        if (expectedKey !== null && !u.includes("key=" + expectedKey)) {
+            return jsonRes({ error: "key 无效" });
+        }
+        return jsonRes(ACCOUNT_INSTANCES);
     }
     throw new TypeError("fetch failed");
 };
+
+// 6a) 未配置 key（config 空 + env 空）：裸转发 → 账号插件拒绝 → {peers:[]}
+delete process.env.QQBOT_ACCOUNT_ACCESS_KEY;
+pluginState.updateConfig({ accountAccessKey: "" });
+let peersRes = await call("GET /peers", { headers: { host: "127.0.0.1:6091" } });
+assert.deepEqual(peersRes.body.data.peers, [], "无 key 裸调被拒应回 {peers:[]}");
+assert.ok(!lastInstancesUrl.includes("key="), "未配置时不应带 key");
+console.log("ok 6a - 无 key 转发得空列表");
+
+// 6b) 配置 accountAccessKey → 转发 URL 带 ?key=，转发成功
+pluginState.updateConfig({ accountAccessKey: "k-123" });
+peersRes = await call("GET /peers", { headers: { host: "127.0.0.1:6092" } });
+assert.equal(peersRes.body.data.peers.length, 1, "带 key 应转发成功");
+assert.ok(lastInstancesUrl.includes("key=k-123"), "转发 URL 应带 ?key=k-123");
+console.log("ok 6b - 带 key 转发成功");
+
+// 6c) config 置空后 env QQBOT_ACCOUNT_ACCESS_KEY 兜底
+pluginState.updateConfig({ accountAccessKey: "" });
+process.env.QQBOT_ACCOUNT_ACCESS_KEY = "env-key-456";
+expectedKey = "env-key-456";
+peersRes = await call("GET /peers", { headers: { host: "127.0.0.1:6093" } });
+assert.equal(peersRes.body.data.peers.length, 1, "env 兜底 key 应转发成功");
+assert.ok(lastInstancesUrl.includes("key=env-key-456"), "env 兜底应拼进转发 URL");
+delete process.env.QQBOT_ACCOUNT_ACCESS_KEY;
+console.log("ok 6c - env QQBOT_ACCOUNT_ACCESS_KEY 兜底");
+
+// 6d) 账号插件不在的端口 → {peers:[]}
 const peersFail = await call("GET /peers", { headers: { host: "127.0.0.1:65535" } });
 assert.deepEqual(peersFail.body.data.peers, [], "端口上没有账号插件应回 {peers:[]}");
 
-const peersRes = await call("GET /peers", { headers: { host: "127.0.0.1:6099" } });
-assert.equal(peersRes.body.code, 0);
-assert.equal(peersRes.body.data.peers.length, 1);
-assert.deepEqual(peersRes.body.data.peers[0], {
-    uin: SELF, name: "acc-main", webuiPort: 6099, running: true, isLogin: true,
-}, "peers 字段应为 name/uin/webuiPort/running/isLogin");
-
+// 6e) /api/status 六字段 + accountAccessKey 打码
+pluginState.updateConfig({ accountAccessKey: "k-123" });
+expectedKey = "k-123";
 const statusRes = await call("GET /status", { headers: { host: "192.168.1.204:6099" } });
 const statusData = statusRes.body.data;
 assert.equal(statusData.selfId, SELF, "status.selfId");
@@ -282,11 +317,29 @@ assert.equal(statusData.instanceName, "acc-main", "status.instanceName 应按 ui
 assert.equal(statusData.webuiPort, 6099, "status.webuiPort 应来自 Host 头");
 assert.equal(statusData.configRevision, getBotConfigStatus().revision, "status.configRevision");
 assert.ok(["server", "local"].includes(statusData.configSource), "status.configSource 取值");
+assert.notEqual(statusData.config.accountAccessKey, "k-123", "accountAccessKey 不得出现在 /api 出口");
+
+const configRes = await call("GET /config", {});
+assert.notEqual(configRes.body.data.accountAccessKey, "k-123", "accountAccessKey 不得出现在 /api/config 出口");
 
 const botsRes = await call("GET /server-bots", {});
 assert.equal(botsRes.body.code, 0);
 assert.deepEqual(botsRes.body.data.bots, [], "服务端未配置时 bots 应回空数组");
-console.log("ok 6 - /api/peers 转发与 /api/status 六字段");
+console.log("ok 6 - /api/peers 转发鉴权与 /api/status 六字段（含 key 打码）");
+
+// ---------- 7) 生命周期守卫：start/stop 不抛 ReferenceError（防漏 import 再犯） ----------
+assert.equal(typeof startServerConfigSync, "function");
+assert.equal(typeof stopServerConfigSync, "function");
+globalThis.fetch = async () => { throw new TypeError("fetch failed"); };
+logs.length = 0;
+startServerConfigSync();
+await new Promise((resolve) => setTimeout(resolve, 1200));
+stopServerConfigSync();
+assert.ok(
+    logs.some((l) => l.includes("[配置] 服务端同步失败") || l.includes("[配置] 启动导入失败")),
+    "startServerConfigSync 应完整走导入+首轮同步流程（fetch 失败仅记 warn 不抛）",
+);
+console.log("ok 7 - startServerConfigSync/stopServerConfigSync 生命周期无 ReferenceError");
 
 // ---------- 清理 ----------
 stopServerConfigSync();

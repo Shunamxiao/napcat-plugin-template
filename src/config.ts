@@ -119,6 +119,8 @@ export const DEFAULT_CONFIG: PluginConfig = {
     aiTrigger: { private: true, groupAtOnly: true },
     blocklist: { users: [], syncSeconds: 300, lastSyncedAt: "" },
     groupConfigRefreshMs: 300000,
+    /** 账号插件 /instances 转发凭据（?key=）；只在插件后端使用，绝不进 /api 出口与日志 */
+    accountAccessKey: "",
 };
 
 /** ID 数组 → 多行文本(每行一个 QQ 号/群号) */

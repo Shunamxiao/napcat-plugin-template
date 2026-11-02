@@ -27,7 +27,7 @@ export function isTokenPlaceholder(value: unknown): boolean {
     return value === undefined || value === null || value === "" || value === TOKEN_MASK;
 }
 
-/** 返回配置副本，kbService.token 打码；只在序列化出口使用，不回写运行时状态 */
+/** 返回配置副本，kbService.token 与 accountAccessKey 打码；只在序列化出口使用，不回写运行时状态 */
 export function maskConfig(config: PluginConfig): PluginConfig {
     return {
         ...config,
@@ -35,6 +35,7 @@ export function maskConfig(config: PluginConfig): PluginConfig {
             ...config.kbService,
             token: config.kbService?.token ? TOKEN_MASK : "",
         },
+        accountAccessKey: config.accountAccessKey ? TOKEN_MASK : "",
     };
 }
 
@@ -302,6 +303,9 @@ export function sanitizeConfig(raw: unknown): PluginConfig {
     // 文本字段始终由结构化规则推导,保证读取与持久化内容一致
     out.groupRulesText = groupRulesToText(out.groupRules);
 
+    // 账号插件转发凭据：只收字符串；占位符/掩码走不到这里（上游 applyConfigPatch/replaceConfig 已换回原值）
+    if (typeof raw.accountAccessKey === 'string') out.accountAccessKey = raw.accountAccessKey.trim();
+
     if (isObject(raw.private)) {
         if (typeof raw.private.enabled === 'boolean') out.private.enabled = raw.private.enabled;
         if (typeof raw.private.defaultReply === 'string') out.private.defaultReply = raw.private.defaultReply;
@@ -421,6 +425,10 @@ export function applyConfigPatch(current: PluginConfig, patch: Partial<PluginCon
             ...patch.blocklist,
             users: Array.isArray(patch.blocklist.users) ? patch.blocklist.users : current.blocklist.users,
         };
+    }
+    // 账号插件转发凭据：掩码 = 页面回传，保持原值；空串 = 显式清空（回落 env 兜底）
+    if (patch.accountAccessKey === TOKEN_MASK) {
+        merged.accountAccessKey = current.accountAccessKey;
     }
     return sanitizeConfig(merged);
 }
@@ -649,6 +657,10 @@ class PluginState {
                 // 页面/原生配置面板回传的是占位符或空串 → 沿用磁盘上的真令牌
                 next.kbService = { ...next.kbService, token: this.config.kbService.token };
             }
+        }
+        // 账号插件转发凭据：掩码 = 页面回传，沿用当前真值；空串 = 显式清空（回落 env 兜底）
+        if (next.accountAccessKey === TOKEN_MASK) {
+            next.accountAccessKey = this.config.accountAccessKey;
         }
         this.config = sanitizeConfig(next);
         this.saveConfig();
