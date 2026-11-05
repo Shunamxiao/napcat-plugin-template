@@ -13,7 +13,7 @@
  * │ 页面            │ /plugin/<plugin-id>/page/<path>             │ router.page     │
  * └─────────────────┴──────────────────────────────────────────────┴─────────────────┘
  *
- * 一般插件自带的 WebUI 页面使用 NoAuth 路由，因为页面本身已在 NapCat WebUI 内嵌展示。
+ * 读接口可按用途使用 NoAuth；所有管理写接口必须使用 NapCat 鉴权路由。
  */
 
 import type {
@@ -24,7 +24,7 @@ import type {
 import { timingSafeEqual } from 'crypto';
 import fs from 'fs';
 import path from 'path';
-import { applyConfigPatch, maskConfig, pluginState, sanitizeConfig } from '../core/state';
+import { applyConfigPatch, isTokenPlaceholder, maskConfig, pluginState, sanitizeConfig, TOKEN_MASK } from '../core/state';
 import { startGuardWordsSync } from '../core/guard-words';
 import { startGroupConfigSync, buildEffectiveGroupPolicies, getGroupConfigStatus, getServerGroup, getServerGroupConfigs, getServerGuardPolicy, resolveEffectiveGroupPolicy, resolveGroupWelcome, resolveGuardPolicy, applyServerGroupEntry, applyServerGuardPolicy } from '../core/group-config';
 import { getBotConfigStatus } from '../core/server-config';
@@ -45,6 +45,15 @@ function tokenMatches(provided: string, expected: string): boolean {
 
 function isObject(v: unknown): v is Record<string, unknown> {
     return v !== null && typeof v === 'object' && !Array.isArray(v);
+}
+
+/** 清洗服务端配置，但保留其令牌占位符供读写往返。 */
+function sanitizeServerConfig(raw: unknown): PluginConfig {
+    const config = sanitizeConfig(raw);
+    if (isObject(raw) && isObject(raw.kbService) && raw.kbService.token === TOKEN_MASK) {
+        config.kbService.token = TOKEN_MASK;
+    }
+    return config;
 }
 
 /** 账号管理插件（同进程）的实例条目；字段名与契约 §2.5 一致 */
@@ -214,7 +223,7 @@ export function registerApiRoutes(ctx: NapCatPluginContext): void {
         res.json({ code: 0, data: { bots } });
     });
 
-    /** 读服务端整份配置（只读代理，服务端已掩码原样透传）；支持 ?uin= 编辑其他实例，缺省=selfId */
+    /** 读服务端整份配置（只读代理；先迁移旧字段再打码回显）；支持 ?uin= 编辑其他实例，缺省=selfId */
     router.getNoAuth('/server-config', async (req, res) => {
         const rawUin = req.query?.uin;
         const qUin = Array.isArray(rawUin) ? rawUin[0] : rawUin;
@@ -230,7 +239,7 @@ export function registerApiRoutes(ctx: NapCatPluginContext): void {
         if (!entry) {
             return res.status(502).json({ code: -1, error: '服务端配置读取失败（未同步或服务不可达）' });
         }
-        res.json({ code: 0, data: { config: entry.config, revision: entry.revision } });
+        res.json({ code: 0, data: { config: maskConfig(sanitizeServerConfig(entry.config)), revision: entry.revision } });
     });
 
     /**
@@ -267,7 +276,11 @@ export function registerApiRoutes(ctx: NapCatPluginContext): void {
                 if (!remote) {
                     return res.status(404).json({ code: -1, message: '服务端尚无该号的配置记录，无法合并保存' });
                 }
-                merged = applyConfigPatch(sanitizeConfig(remote.config), patch);
+                const remoteConfig = sanitizeServerConfig(remote.config);
+                merged = applyConfigPatch(remoteConfig, patch);
+                if (remoteConfig.kbService.token === TOKEN_MASK && isTokenPlaceholder(patch.kbService?.token)) {
+                    merged.kbService.token = TOKEN_MASK;
+                }
             }
             const result = await putBotConfig(cfg, uin, merged, expectedRevision);
             if (!result.ok) {
@@ -293,7 +306,7 @@ export function registerApiRoutes(ctx: NapCatPluginContext): void {
         }
     });
 
-    // ==================== 配置管理（无鉴权）====================
+    // ==================== 配置管理 =====================
 
     /** 获取配置（令牌打码；真 token 绝不下发） */
     router.getNoAuth('/config', (_req, res) => {
@@ -305,7 +318,7 @@ export function registerApiRoutes(ctx: NapCatPluginContext): void {
     });
 
     /** 保存配置 */
-    router.postNoAuth('/config', async (req, res) => {
+    router.post('/config', async (req, res) => {
         try {
             const body = req.body as Record<string, unknown> | undefined;
             if (!body) {
@@ -323,7 +336,7 @@ export function registerApiRoutes(ctx: NapCatPluginContext): void {
         }
     });
 
-    // ==================== 关键词命中统计（无鉴权）====================
+    // ==================== 关键词命中统计 =====================
 
     /** 命中统计：{"<match>|<matchType>": {count,lastAt}} */
     router.getNoAuth('/keyword-stats', (_req, res) => {
@@ -331,7 +344,7 @@ export function registerApiRoutes(ctx: NapCatPluginContext): void {
     });
 
     /** 重置命中统计：清内存并立即写空对象 */
-    router.postNoAuth('/keyword-stats/reset', (_req, res) => {
+    router.post('/keyword-stats/reset', (_req, res) => {
         resetKeywordStats();
         res.json({ code: 0, message: 'ok' });
     });
@@ -570,7 +583,7 @@ export function registerApiRoutes(ctx: NapCatPluginContext): void {
     });
 
     /** 写单个群的服务端配置：PUT /admin/groups/:groupId（Basic 凭据来自环境） */
-    router.postNoAuth('/groups/:id', async (req, res) => {
+    router.post('/groups/:id', async (req, res) => {
         const groupId = String(req.params?.id ?? '').trim();
         if (!GROUP_ID_RE.test(groupId)) {
             return res.status(400).json({ code: -1, message: '群号不合法' });
@@ -603,7 +616,7 @@ export function registerApiRoutes(ctx: NapCatPluginContext): void {
     });
 
     /** 守卫处罚策略：写服务端 PUT /admin/guard-policy */
-    router.postNoAuth('/guard-policy', async (req, res) => {
+    router.post('/guard-policy', async (req, res) => {
         const parsed = parseGuardPolicy(req.body);
         if (!parsed.ok) {
             return res.status(400).json({ code: -1, message: parsed.error });

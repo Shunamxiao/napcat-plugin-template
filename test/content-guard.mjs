@@ -16,7 +16,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { handleMessage, pluginState, sanitizeConfig, clearGuardPenalty } from "../dist/index.mjs";
+import { handleMessage, pluginState, sanitizeConfig, clearGuardPenalty, resetTraffic, snapshotTraffic } from "../dist/index.mjs";
 
 const SELF = "1457278554";
 const OTHER = "2622011721";
@@ -207,6 +207,19 @@ assert.ok(logs.some((l) => l.includes("reason=guard_recall")), "No data returned
 assert.ok(!logs.some((l) => l.includes("reason=guard_recall_failed")), "不应误记为撤回失败");
 ctx.actions.call = originalCall;
 console.log("ok 7 - delete_msg 无返回值按成功处理");
+
+// 8) 自动回复总开关关闭：仍计入流量并执行守卫，但不发送自动回复
+reset({ enabled: false });
+resetTraffic();
+deletesBefore = deletes.length;
+outboxBefore = outbox.length;
+await handleMessage(ctx, event("group", "请加微信 abc123"));
+await wait();
+const disabledTraffic = snapshotTraffic().find((item) => item.scope === "group:" + GID);
+assert.equal(disabledTraffic?.in, 1, "总开关关闭时仍应记录入站流量");
+assert.equal(deletes.length, deletesBefore + 1, "总开关关闭时守卫仍应执行");
+assert.equal(outbox.length, outboxBefore, "总开关关闭时不应发送自动回复");
+console.log("ok 8 - 总开关关闭仍统计并执行守卫，但不自动回复");
 
 fs.rmSync(dir, { recursive: true, force: true });
 console.log("\ncontent-guard tests passed");

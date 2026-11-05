@@ -160,14 +160,14 @@ assert.equal(outbox.length, before + 1, "mode=all + fallback_only 未命中应�
 assert.equal(textOf(outbox[outbox.length - 1]), "全局群兜底");
 console.log("ok 2b - all + fallback_only：非 @ 未命中回兜底");
 
-// 3) at：非 @ 命中关键词 → 按 keywordOutsideAt（默认 true）回复
+// 3) 已配置群显式沿用 keywordOutsideAt=true：非 @ 命中关键词仍回复
 hitLog.clear();
 before = outbox.length;
 await handleMessage(ctx, groupEvent("怎么下载", false, "100000003"));
 await wait();
-assert.equal(outbox.length, before + 1, "mode=at 非 @ 命中关键词应回复");
+assert.equal(outbox.length, before + 1, "已配置群 keywordOutsideAt=true 时非 @ 命中关键词应回复");
 assert.equal(textOf(outbox[outbox.length - 1]), "规则回复");
-console.log("ok 3 - at：非 @ 命中关键词按 keywordOutsideAt 回复");
+console.log("ok 3 - 已配置群显式 keywordOutsideAt=true 时非 @ 命中关键词回复");
 
 // 3b) at：非 @ 未命中 → 静默
 before = outbox.length;

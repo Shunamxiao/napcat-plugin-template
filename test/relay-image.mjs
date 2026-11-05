@@ -180,10 +180,12 @@ assert.equal(res.body.error, "userId 与 (text 或 image) 不能为空");
 assert.equal(outbox.length, before, "参数错误不应发送");
 ok("relay text/image 全空报参数错误");
 
-// token 行为不回归
+// token 行为不回归：缺失或错误都拒绝
+res = await callRelay({ userId: USER, text: "x" }, "");
+assert.equal(res.statusCode, 401);
 res = await callRelay({ userId: USER, text: "x" }, "wrong-token");
 assert.equal(res.statusCode, 401);
-ok("relay 鉴权不回归");
+ok("relay 缺失或错误 token 均拒绝");
 
 fs.rmSync(dir, { recursive: true, force: true });
 console.log(`\n${passed} passed`);

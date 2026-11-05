@@ -22,7 +22,6 @@
 import type {
     PluginModule,
     PluginConfigSchema,
-    PluginConfigUIController,
     NapCatPluginContext,
 } from 'napcat-types/napcat-onebot/network/plugin/types';
 import { EventType } from 'napcat-types/napcat-onebot/event/index';
@@ -33,9 +32,10 @@ import { buildEffectiveGroupPolicies, getGroupConfigStatus, getServerGroupConfig
 import { clearGuardPenalty } from './core/guard-penalty';
 import { startServerConfigSync, stopServerConfigSync } from './core/server-config';
 import { hitLog } from './core/hit-log';
+import { startHandoffCleanup, stopHandoffCleanup } from './core/handoff';
 import { initKeywordStats, shutdownKeywordStats } from './core/keyword-stats';
 import { startKeywordReport, stopKeywordReport } from './core/keyword-report';
-import { buildTrafficPayload, commitTrafficReport, hourBucket, recordTrafficIncoming, recordTrafficReply, recordTrafficRuleHit, reportTrafficOnce, resetTraffic, snapshotTraffic, startTrafficReport, stopTrafficReport } from './core/traffic-stats';
+import { startTrafficReport, stopTrafficReport } from './core/traffic-stats';
 import { startBlocklistSync, stopBlocklistSync } from './core/blocklist';
 import { startGuardWordsSync, stopGuardWordsSync } from './core/guard-words';
 import { clearPrivateMerge, handleMessage } from './handlers/message-handler';
@@ -65,6 +65,7 @@ export const plugin_init: PluginModule['plugin_init'] = async (ctx) => {
         const keywordStatsFile = pluginState.getDataFilePath('keyword-stats.json');
         initKeywordStats(keywordStatsFile);
         ctx.logger.info('关键词命中统计文件: ' + keywordStatsFile);
+        startHandoffCleanup(pluginState.getDataFilePath('handoff.jsonl'));
 
         // 2. 生成配置 Schema（用于 NapCat WebUI 配置面板）
         // 原生扩展页只保留老字段 + 只读摘要；React 插件页是唯一编辑入口
@@ -90,7 +91,9 @@ export const plugin_init: PluginModule['plugin_init'] = async (ctx) => {
         startTrafficReport();
 
         // 群配置同步是异步的：同步完成后刷新原生页摘要（模式分布 / 上次同步时间）
+        clearTimeout(pluginState.timers.get('schema-summary'));
         const schemaTimer = setTimeout(() => {
+            pluginState.timers.delete('schema-summary');
             try {
                 plugin_config_ui = buildConfigSchema(ctx, buildSchemaSummary());
             } catch (e) {
@@ -98,6 +101,7 @@ export const plugin_init: PluginModule['plugin_init'] = async (ctx) => {
             }
         }, 3000);
         if (typeof schemaTimer.unref === 'function') schemaTimer.unref();
+        pluginState.timers.set('schema-summary', schemaTimer);
 
         ctx.logger.info('插件初始化完成');
     } catch (error) {
@@ -112,9 +116,6 @@ export const plugin_init: PluginModule['plugin_init'] = async (ctx) => {
 export const plugin_onmessage: PluginModule['plugin_onmessage'] = async (ctx, event) => {
     // 仅处理消息事件
     if (event.post_type !== EventType.MESSAGE) return;
-    // 检查插件是否启用
-    if (!pluginState.config.enabled) return;
-    // 委托给消息处理器
     await handleMessage(ctx, event);
 };
 
@@ -137,13 +138,14 @@ export const plugin_onevent: PluginModule['plugin_onevent'] = async (ctx, event)
  */
 export const plugin_cleanup: PluginModule['plugin_cleanup'] = async (ctx) => {
     try {
-        // 先停拉黑/词表同步定时器，再清理插件状态（热重载不泄漏）
+        // 先停同步/清理定时器，再清理插件状态（热重载不泄漏）
         stopBlocklistSync();
         stopGuardWordsSync();
         stopGroupConfigSync();
         stopServerConfigSync();
         stopKeywordReport();
         stopTrafficReport();
+        stopHandoffCleanup();
         clearGuardPenalty();
         hitLog.clear();
         clearPrivateMerge();
@@ -159,7 +161,7 @@ export const plugin_cleanup: PluginModule['plugin_cleanup'] = async (ctx) => {
 // ==================== 配置管理钩子 ====================
 
 /** 获取当前配置 */
-export const plugin_get_config: PluginModule['plugin_get_config'] = async (ctx) => {
+export const plugin_get_config: PluginModule['plugin_get_config'] = async (_ctx) => {
     // 出口一律打码：真 token 只留在磁盘配置与请求头里，不进任何响应
     const cfg = maskConfig(pluginState.config);
     return {
@@ -191,7 +193,7 @@ export const plugin_set_config: PluginModule['plugin_set_config'] = async (ctx, 
         cfg.keywordsText = keywordsToText(Array.isArray(cfg.keywords) ? cfg.keywords : []);
     }
     // 白名单/黑名单:文本存在则解析回数组,否则从数组反推文本(与 keywordsText 同一双向同步模式)
-    const syncList = (list, text) => {
+    const syncList = (list: (number | string)[], text: string | undefined): { list: (number | string)[]; text: string } => {
         if (typeof text === 'string' && text.trim()) return { list: textToIdList(text), text };
         return { list, text: idListToText(list) };
     };
@@ -261,7 +263,7 @@ export const plugin_set_config: PluginModule['plugin_set_config'] = async (ctx, 
  * 当 WebUI 中修改单个配置项时触发（需配置项标记 reactive: true）
  */
 export const plugin_on_config_change: PluginModule['plugin_on_config_change'] = async (
-    ctx, ui, key, value, currentConfig
+    ctx, _ui, key, value, _currentConfig
 ) => {
     try {
         pluginState.updateConfig({ [key]: value });
@@ -330,7 +332,7 @@ export { GuardPenaltyCounter, applyGuardPenalty, clearGuardPenalty, DEFAULT_GUAR
 export { HitLog, hitLog } from './core/hit-log';
 export { resolveGroupWelcome, resolveEffectiveGroupPolicy, resolveEffectiveGroupCooldown, resolveEffectiveGroupFallback, isGroupManaged, buildEffectiveGroupPolicies, getServerGroup, getServerGroupConfigs, applyServerGroupEntry, applyServerGuardPolicy, getServerGuardPolicy, resolveGuardPolicy, syncGroupConfig, startGroupConfigSync, stopGroupConfigSync, getGroupConfigStatus } from './core/group-config';
 export { parseEnvFile, readAdminCredentials, putServerGroup, putServerGuardPolicy, getServerGuardPolicy as getServerGuardPolicyRemote } from './services/admin-client';
-export { appendHandoffRecord } from './core/handoff';
+export { appendHandoffRecord, pruneHandoffFile, startHandoffCleanup, stopHandoffCleanup } from './core/handoff';
 export { classifySendError, sendWithRetry, MIN_RETRY_DELAY_MS } from './core/send-retry';
 export { SendGuard } from './core/send-guard';
 export { LoopGuard } from './core/loop-guard';

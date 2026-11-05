@@ -70,8 +70,6 @@ export interface BlocklistCacheConfig {
 /** 私聊配置 */
 export interface PrivateConfig {
     enabled: boolean;
-    /** 未命中关键词时的兜底回复，空 = 不回复 */
-    defaultReply: string;
     /** QQ 号白名单，空 = 对所有人生效 */
     whitelist: (number | string)[];
     /** WebUI 编辑用的多行文本形式(每行一个 QQ 号,# 注释,不参与匹配) */
@@ -91,10 +89,10 @@ export interface GroupConfig {
 
 /**
  * 未配置群（服务端无条目、本地 groupRules 也没有）的默认策略。
- * 老行为是「一律静默」，现改为走这里，默认 at + 关键词命中才回，防刷。
+ * 默认只响应 @ 或引用机器人，避免普通群消息触发回复。
  */
 export interface GroupDefaultConfig {
-    /** 群模式；默认 at（仅 @ 或命中关键词时响应） */
+    /** 群模式；默认 at（仅 @ 或引用机器人时响应） */
     mode: GroupMode;
     /** 未命中关键词时的策略；默认 none（不回复） */
     missPolicy: MissPolicy;

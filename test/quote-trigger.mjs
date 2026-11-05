@@ -114,6 +114,22 @@ assert.equal(outbox.length, before + 1, "引用机器人消息应触发回复");
 assert.equal(textOf(outbox[outbox.length - 1]), "群兜底");
 console.log("ok 2 - 引用机器人消息且未 @ 仍触发");
 
+// 1b) 未配置群默认也允许引用机器人触发
+pluginState.config = sanitizeConfig({
+  ...JSON.parse(fs.readFileSync(configPath, "utf-8")),
+  groupRules: {},
+});
+before = outbox.length;
+await handleMessage(ctx, groupEvent("[CQ:reply,id=" + botMessageId + "] 这怎么弄", [
+  { type: "reply", data: { id: botMessageId } },
+  { type: "text", data: { text: " 这怎么弄" } },
+]));
+await wait();
+assert.equal(outbox.length, before + 1, "未配置群引用机器人消息仍应触发回复");
+assert.equal(textOf(outbox[outbox.length - 1]), "群兜底");
+console.log("ok 2b - 未配置群引用机器人消息仍触发");
+pluginState.config = sanitizeConfig(JSON.parse(fs.readFileSync(configPath, "utf-8")));
+
 // 2) 引用他人消息 → 不触发
 before = outbox.length;
 await handleMessage(ctx, groupEvent("[CQ:reply,id=someone-else] 这怎么弄", [

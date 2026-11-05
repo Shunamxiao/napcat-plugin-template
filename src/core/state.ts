@@ -27,13 +27,17 @@ export function isTokenPlaceholder(value: unknown): boolean {
     return value === undefined || value === null || value === "" || value === TOKEN_MASK;
 }
 
-/** 返回配置副本，kbService.token 与 accountAccessKey 打码；只在序列化出口使用，不回写运行时状态 */
+/** 返回配置副本，所有令牌字段打码；只在序列化出口使用，不回写运行时状态 */
 export function maskConfig(config: PluginConfig): PluginConfig {
     return {
         ...config,
         kbService: {
             ...config.kbService,
             token: config.kbService?.token ? TOKEN_MASK : "",
+        },
+        relay: {
+            ...config.relay,
+            token: config.relay?.token ? TOKEN_MASK : "",
         },
         accountAccessKey: config.accountAccessKey ? TOKEN_MASK : "",
     };
@@ -196,11 +200,16 @@ export function sanitizeConfig(raw: unknown): PluginConfig {
             autoAccept: typeof raw.friendRequest.autoAccept === 'boolean' ? raw.friendRequest.autoAccept : (out.friendRequest?.autoAccept ?? false),
         };
     }
+    const legacyPrivateText = isObject(raw.private) && typeof raw.private.defaultReply === 'string'
+        ? raw.private.defaultReply
+        : undefined;
     if (isObject(raw.fallback)) {
         out.fallback = {
-            privateText: typeof raw.fallback.privateText === 'string' ? raw.fallback.privateText : out.fallback.privateText,
+            privateText: typeof raw.fallback.privateText === 'string' ? raw.fallback.privateText : (legacyPrivateText ?? out.fallback.privateText),
             groupAtText: typeof raw.fallback.groupAtText === 'string' ? raw.fallback.groupAtText : out.fallback.groupAtText,
         };
+    } else if (legacyPrivateText !== undefined) {
+        out.fallback.privateText = legacyPrivateText;
     }
     if (isObject(raw.collect)) {
         out.collect = {
@@ -308,7 +317,6 @@ export function sanitizeConfig(raw: unknown): PluginConfig {
 
     if (isObject(raw.private)) {
         if (typeof raw.private.enabled === 'boolean') out.private.enabled = raw.private.enabled;
-        if (typeof raw.private.defaultReply === 'string') out.private.defaultReply = raw.private.defaultReply;
         if (Array.isArray(raw.private.whitelist)) out.private.whitelist = raw.private.whitelist.map(String);
         if (typeof raw.private.whitelistText === 'string') out.private.whitelistText = raw.private.whitelistText;
         // 0 表示关闭合并；上限 60 秒，防止误配成超大值导致回复迟迟不发
@@ -396,6 +404,7 @@ export function applyConfigPatch(current: PluginConfig, patch: Partial<PluginCon
     }
     if (patch.collect) merged.collect = { ...current.collect, ...patch.collect };
     if (patch.relay) merged.relay = { ...current.relay, ...patch.relay };
+    if (patch.relay?.token === TOKEN_MASK) merged.relay.token = current.relay.token;
     if (patch.sendGuard) merged.sendGuard = { ...current.sendGuard, ...patch.sendGuard };
     if (patch.guard) merged.guard = { ...current.guard, ...patch.guard };
     // 群级规则文本:合法 JSON 才覆盖结构化规则,非法文本忽略
@@ -676,6 +685,9 @@ class PluginState {
                 // 页面/原生配置面板回传的是占位符或空串 → 沿用磁盘上的真令牌
                 next.kbService = { ...next.kbService, token: this.config.kbService.token };
             }
+        }
+        if (next.relay?.token === TOKEN_MASK) {
+            next.relay = { ...next.relay, token: this.config.relay.token };
         }
         // 账号插件转发凭据：掩码 = 页面回传，沿用当前真值；空串 = 显式清空（回落 env 兜底）
         if (next.accountAccessKey === TOKEN_MASK) {

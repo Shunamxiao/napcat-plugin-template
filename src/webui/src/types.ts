@@ -87,8 +87,6 @@ export interface KeywordRuleView {
 
 export interface PrivateConfigView {
     enabled: boolean
-    /** 私聊兜底话术（历史字段；运行时兜底实际读 fallback.privateText） */
-    defaultReply?: string
     whitelist?: (number | string)[]
     whitelistText?: string
     /** 同一私聊用户连发合并窗口（毫秒）；0 = 关闭 */
@@ -114,6 +112,7 @@ export interface PluginConfigView {
     groupWelcome?: { enabled: boolean; template: string }
     group?: { enabled: boolean }
     private?: PrivateConfigView
+    fallback?: { privateText: string; groupAtText: string }
     aiTrigger?: AiTriggerView
     keywords?: KeywordRuleView[]
     keywordsText?: string

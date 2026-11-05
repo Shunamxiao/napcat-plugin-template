@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { fetchBotConfigView, noAuthFetch, saveBotConfig } from '../utils/api'
+import { authFetch, fetchBotConfigView, noAuthFetch, saveBotConfig } from '../utils/api'
 import { showToast } from '../hooks/useToast'
 import { useAccount } from '../hooks/useAccount'
 import type {
@@ -27,7 +27,7 @@ const DEFAULT_GROUP: GroupDefaultView = {
     mode: 'at',
     missPolicy: 'none',
     atForceReply: true,
-    keywordOutsideAt: true,
+    keywordOutsideAt: false,
     cooldownSeconds: null,
     fallbackText: null
 }
@@ -170,7 +170,7 @@ export default function GroupRulesPage() {
         setSavingId(row.groupId)
         try {
             const fallbackText = row.fallbackText && row.fallbackText.trim() ? row.fallbackText.trim() : null
-            const res = await noAuthFetch<GroupRuleEntry>(`/groups/${encodeURIComponent(row.groupId)}`, {
+            const res = await authFetch<GroupRuleEntry>(`/groups/${encodeURIComponent(row.groupId)}`, {
                 method: 'POST',
                 body: JSON.stringify({
                     mode: row.mode,
@@ -242,8 +242,8 @@ export default function GroupRulesPage() {
                         </button>
                     </div>
                     <p className="text-xs text-gray-400 mb-3">
-                        服务端无该群条目、本地 groupRules 也没有时使用这套策略。默认「仅 @ 响应 + 未命中不回复」，
-                        被 @ 未命中仍回兜底，非 @ 命中关键词会回 —— 未配置群不再一律静默。
+                        服务端无该群条目、本地 groupRules 也没有时使用这套策略。默认只响应 @ 或引用机器人；
+                        普通群消息即使命中关键词也保持静默。
                     </p>
                     <div className="space-y-3">
                         <RadioGroup

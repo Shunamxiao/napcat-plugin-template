@@ -106,7 +106,7 @@ export const DEFAULT_CONFIG: PluginConfig = {
         { match: "下载", reply: "群里没有找到吗，先直接去https://apks.cc搜索下载下，这个是群里小伙伴给我的，下载后使用uu安装更新都行" },
         { match: "没找到", reply: "群里没有找到吗，先直接去https://apks.cc搜索下载下，这个是群里小伙伴给我的，下载后使用uu安装更新都行" },
     ],
-    private: { enabled: false, defaultReply: "【自动回复】我现在不在，稍后回复你。", whitelist: [], mergeWindowMs: 3000 },
+    private: { enabled: false, whitelist: [], mergeWindowMs: 3000 },
     group: { enabled: true, whitelist: [] },
     blacklist: [],
     crossAccountDedup: true,

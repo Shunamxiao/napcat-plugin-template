@@ -24,19 +24,19 @@ export interface GroupPolicy {
     missPolicy: PolicyValue<MissPolicy>;
     /** 仅 mode=at 有意义：被 @ 且未命中、missPolicy=none 时仍回兜底（默认 true） */
     atForceReply: PolicyValue<boolean>;
-    /** 仅 mode=all 有意义：非 @ 消息命中关键词也回（默认 true） */
+    /** 非 @ 消息命中关键词是否回复（at / all 两种模式都生效） */
     keywordOutsideAt: PolicyValue<boolean>;
 }
 
 export const DEFAULT_AT_FORCE_REPLY = true;
 export const DEFAULT_KEYWORD_OUTSIDE_AT = true;
 
-/** 未配置群的默认策略：防刷口径（at + 关键词命中才回，未命中不回） */
+/** 未配置群的默认策略：只响应 @ 或引用机器人。 */
 export const DEFAULT_GROUP_DEFAULT: GroupDefaultConfig = {
     mode: 'at',
     missPolicy: 'none',
     atForceReply: true,
-    keywordOutsideAt: true,
+    keywordOutsideAt: false,
     cooldownSeconds: null,
     fallbackText: null,
 };

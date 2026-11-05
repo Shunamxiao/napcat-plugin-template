@@ -1,5 +1,5 @@
 import { Fragment, useCallback, useEffect, useState } from 'react'
-import { fetchBotConfigView, noAuthFetch, saveBotConfig } from '../utils/api'
+import { authFetch, fetchBotConfigView, noAuthFetch, saveBotConfig } from '../utils/api'
 import { showToast } from '../hooks/useToast'
 import { useAccount } from '../hooks/useAccount'
 import type { KeywordMatchType, KeywordRuleView } from '../types'
@@ -106,7 +106,7 @@ export default function PrivateKeywordsPage() {
     const [loaded, setLoaded] = useState(false)
     const [saving, setSaving] = useState(false)
     const [privateEnabled, setPrivateEnabled] = useState(false)
-    const [defaultReply, setDefaultReply] = useState('')
+    const [privateText, setPrivateText] = useState('')
     const [whitelistText, setWhitelistText] = useState('')
     const [mergeWindowMs, setMergeWindowMs] = useState('3000')
     const [aiPrivate, setAiPrivate] = useState(false)
@@ -123,7 +123,7 @@ export default function PrivateKeywordsPage() {
             const data = view.config
             setEditRevision(view.revision)
             setPrivateEnabled(data.private?.enabled === true)
-            setDefaultReply(data.private?.defaultReply ?? '')
+            setPrivateText(data.fallback?.privateText ?? '')
             // 以数组为准生成文本，避免盘上的 whitelistText/blacklistText 陈旧
             setWhitelistText((data.private?.whitelist ?? []).map(String).join('\n'))
             setMergeWindowMs(String(data.private?.mergeWindowMs ?? 3000))
@@ -260,11 +260,11 @@ export default function PrivateKeywordsPage() {
             const result = await saveBotConfig({
                 private: {
                     enabled: privateEnabled,
-                    defaultReply,
                     whitelist,
                     whitelistText,
                     mergeWindowMs: windowMs
                 },
+                fallback: { privateText },
                 aiTrigger: { private: aiPrivate },
                 keywords: rules,
                 // 服务端按 keywordsText 覆盖 keywords：两个字段必须同时写，否则重启回退
@@ -285,7 +285,7 @@ export default function PrivateKeywordsPage() {
     const resetStats = async () => {
         if (!window.confirm('确定清空所有关键词命中统计？此操作不可撤销。')) return
         try {
-            const res = await noAuthFetch('/keyword-stats/reset', {
+            const res = await authFetch('/keyword-stats/reset', {
                 method: 'POST',
                 body: JSON.stringify({})
             })
@@ -325,11 +325,11 @@ export default function PrivateKeywordsPage() {
                         <textarea
                             className="input-field"
                             rows={6}
-                            value={defaultReply}
-                            onChange={(e) => setDefaultReply(e.target.value)}
+                            value={privateText}
+                            onChange={(e) => setPrivateText(e.target.value)}
                             placeholder="例如：我现在不在，稍后回复你～"
                         />
-                        <div className="text-[11px] text-gray-400 mt-1 text-right">{defaultReply.length} 字</div>
+                        <div className="text-[11px] text-gray-400 mt-1 text-right">{privateText.length} 字</div>
                     </div>
                     <div>
                         <div className="text-sm font-medium text-gray-800 dark:text-gray-200 mb-1">私聊白名单</div>

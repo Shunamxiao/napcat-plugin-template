@@ -1,11 +1,8 @@
 /**
  * 流量计数 + 未配置群默认策略自测（不连服务）
  *
- * 覆盖派发单验收：
- *   4) 空 groupRules + 服务端无条目 → resolveEffectiveGroupPolicy('999999')
- *      返回 mode=at / missPolicy=none / atForceReply=true / keywordOutsideAt=true
- *   5) at 模式：非 @ 命中关键词会回、未命中不回；被 @ 未命中回兜底
- *   6) 流量上报 body 字段逐字一致；同一小时桶 users 去重、上报后清空
+ *   1) 未配置群默认只响应 @ / 引用：普通消息即使命中关键词也不回
+ *   2) 流量上报 body 字段逐字一致；同一小时桶 users 去重、上报后清空
  *
  * 用法：node --test test/traffic-stats.mjs（先构建并复制 dist/index.mjs）
  */
@@ -110,43 +107,39 @@ const groupEvent = (text, at, groupId = "999999") => {
 const textOf = (params) => (params.message || []).map((seg) => seg.data?.text ?? "").join("").trim();
 const wait = () => new Promise((resolve) => setTimeout(resolve, 20));
 
-test("未配置群默认策略：at / none / atForceReply / keywordOutsideAt", () => {
+test("未配置群默认策略：at / none / atForceReply / keywordOutsideAt=false", () => {
   const policy = resolveEffectiveGroupPolicy(pluginState.config, "999999");
   assert.deepEqual(policy.mode, { value: "at", source: "default" });
   assert.deepEqual(policy.missPolicy, { value: "none", source: "default" });
   assert.deepEqual(policy.atForceReply, { value: true, source: "default" });
-  assert.deepEqual(policy.keywordOutsideAt, { value: true, source: "default" });
+  assert.deepEqual(policy.keywordOutsideAt, { value: false, source: "default" });
   console.log("  999999 →", JSON.stringify(policy));
 });
 
-test("at 模式：非 @ 命中关键词会回，非 @ 未命中不回，被 @ 未命中回兜底", async () => {
+test("未配置群：普通消息不回，被 @ 时仍回复", async () => {
   resetTraffic();
   hitLog.clear();
 
-  // 非 @ 命中关键词 → 回规则
   let before = outbox.length;
   await handleMessage(ctx, groupEvent("怎么下载", false));
   await wait();
-  assert.equal(outbox.length, before + 1, "非 @ 命中关键词应回复");
-  assert.equal(textOf(outbox[outbox.length - 1]), "规则回复");
+  assert.equal(outbox.length, before, "未配置群非 @ 命中关键词也不应回复");
 
-  // 非 @ 未命中 → 静默（missPolicy=none）
   before = outbox.length;
   await handleMessage(ctx, groupEvent("随便聊聊", false));
   await wait();
-  assert.equal(outbox.length, before, "非 @ 未命中应静默");
+  assert.equal(outbox.length, before, "未配置群非 @ 未命中应静默");
 
-  // 被 @ 未命中 → 回兜底（atForceReply=true）
   before = outbox.length;
   await handleMessage(ctx, groupEvent("随便问问", true));
   await wait();
   assert.equal(outbox.length, before + 1, "@ 未命中应回兜底");
   assert.equal(textOf(outbox[outbox.length - 1]), "全局群兜底");
 
-  // 被 @ 命中 → 规则优先
   before = outbox.length;
   await handleMessage(ctx, groupEvent("怎么下载", true));
   await wait();
+  assert.equal(outbox.length, before + 1, "@ 命中应回规则");
   assert.equal(textOf(outbox[outbox.length - 1]), "规则回复");
 });
 
@@ -214,9 +207,9 @@ test("小时桶切分：跨小时各算一桶", () => {
   ]);
 });
 
-test("端到端：命中关键词时 ruleHits 与 in/replies 同步累加", async () => {
+test("端到端：被 @ 命中关键词时 ruleHits 与 in/replies 同步累加", async () => {
   resetTraffic();
-  await handleMessage(ctx, groupEvent("怎么下载", false));
+  await handleMessage(ctx, groupEvent("怎么下载", true));
   await wait();
   const item = snapshotTraffic().find((entry) => entry.scope === "group:999999");
   assert.ok(item, "应产生群 999999 的流量桶");

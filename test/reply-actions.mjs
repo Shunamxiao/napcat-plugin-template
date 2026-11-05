@@ -18,6 +18,7 @@ import os from "node:os";
 import path from "node:path";
 import {
   appendHandoffRecord,
+  HitLog,
   beginCollect,
   clearCollect,
   collectKey,
@@ -25,6 +26,7 @@ import {
   isGroupConfigured,
   keywordsToText,
   notifyHandoff,
+  pruneHandoffFile,
   planReply,
   SendGuard,
   sendWithRetry,
@@ -33,6 +35,11 @@ import {
   resolveGroupFallback,
   resolveGroupPolicy,
   resolveSend,
+  startHandoffCleanup,
+  stopHandoffCleanup,
+  applyConfigPatch,
+  plugin_get_config,
+  pluginState,
   sanitizeConfig,
   stepCollect,
   textToKeywords,
@@ -294,6 +301,47 @@ test("collect/relay 配置缺省值：关闭追问、无题、relay 令牌为空
   });
 });
 
+test("私聊兜底统一字段并只读迁移旧字段", () => {
+  const fresh = sanitizeConfig({});
+  assert.equal(fresh.private.enabled, false);
+  const legacy = sanitizeConfig({ private: { defaultReply: "旧私聊兜底" }, fallback: { groupAtText: "群兜底" } });
+  assert.equal(legacy.fallback.privateText, "旧私聊兜底");
+  assert.equal("defaultReply" in legacy.private, false);
+  const current = sanitizeConfig({ private: { defaultReply: "旧值" }, fallback: { privateText: "新值" } });
+  assert.equal(current.fallback.privateText, "新值");
+});
+
+test("令牌出口打码，relay 占位符保留且空串清除", async () => {
+  const original = pluginState.config;
+  const current = sanitizeConfig({
+    accountAccessKey: "account-secret",
+    kbService: { enabled: true, baseUrl: "https://svc.test", token: "service-secret", timeoutMs: 1000 },
+    relay: { token: "relay-secret" },
+  });
+  pluginState.config = current;
+  const masked = await plugin_get_config();
+  assert.equal(masked.accountAccessKey, "••••••");
+  assert.equal(masked.kbService.token, "••••••");
+  assert.equal(masked.relay.token, "••••••");
+  assert.equal(applyConfigPatch(current, { relay: { token: "••••••" } }).relay.token, "relay-secret");
+  assert.equal(applyConfigPatch(current, { relay: { token: "" } }).relay.token, "");
+  pluginState.replaceConfig(masked);
+  assert.equal(pluginState.config.relay.token, "relay-secret");
+  assert.equal(pluginState.config.kbService.token, "service-secret");
+  assert.equal(pluginState.config.accountAccessKey, "account-secret");
+  pluginState.replaceConfig({ ...masked, relay: { token: "" } });
+  assert.equal(pluginState.config.relay.token, "");
+  pluginState.config = original;
+});
+
+test("命中日志读写均排除 30 天前记录", () => {
+  const now = Date.parse("2026-11-05T00:00:00.000Z");
+  const log = new HitLog(10, () => now);
+  log.add({ ts: "2026-10-05T23:59:59.999Z", channel: "private", userId: "old", result: "answered" });
+  log.add({ ts: "2026-10-06T00:00:00.000Z", channel: "private", userId: "kept", result: "answered" });
+  assert.deepEqual(log.list().map((entry) => entry.userId), ["kept"]);
+});
+
 test("notifyHandoff：上报 /handoff，带 collected 与鉴权头", async () => {
   const calls = [];
   const ok = await notifyHandoff(
@@ -366,24 +414,23 @@ test("notifyHandoff：无 collected 不上传空数组；失败/异常一律 fal
   assert.equal(called, false);
 });
 
-test("human 留档写入 JSONL", () => {  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "handoff-"));
+test("human 留档写入并原子清理 30 天前合法记录", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "handoff-"));
   const file = path.join(dir, "handoff.jsonl");
-  const ok = appendHandoffRecord(file, {
-    ts: new Date().toISOString(),
-    userId: "u1",
-    groupId: "928013991",
-    text: "我要投诉",
-    reason: "keyword_human",
-    rule: "投诉",
-    collected: [{ q: "哪个游戏？", a: "原神" }],
-  });
-  assert.equal(ok, true);
-  const line = JSON.parse(fs.readFileSync(file, "utf-8").trim());
-  assert.equal(line.reason, "keyword_human");
-  assert.equal(line.groupId, "928013991");
-  assert.deepEqual(line.collected, [{ q: "哪个游戏？", a: "原神" }]);
-  fs.unlinkSync(file);
-  fs.rmdirSync(dir);
+  const now = Date.parse("2026-11-05T00:00:00.000Z");
+  const recent = { ts: "2026-10-06T00:00:00.000Z", userId: "recent", text: "保留", reason: "keyword_human" };
+  const old = { ts: "2026-10-05T23:59:59.999Z", userId: "old", text: "删除", reason: "keyword_human" };
+  assert.equal(appendHandoffRecord(file, old), true);
+  assert.equal(appendHandoffRecord(file, recent), true);
+  fs.appendFileSync(file, "坏行保留\n");
+  assert.equal(pruneHandoffFile(file, now), true);
+  assert.equal(fs.readFileSync(file, "utf-8"), JSON.stringify(recent) + "\n坏行保留\n");
+
+  startHandoffCleanup(file);
+  assert.ok(globalThis.__napcatAutoreplyHandoffCleanupTimer);
+  stopHandoffCleanup();
+  assert.equal(globalThis.__napcatAutoreplyHandoffCleanupTimer, undefined);
+  fs.rmSync(dir, { recursive: true, force: true });
 });
 
 for (const [name, fn] of pending) {

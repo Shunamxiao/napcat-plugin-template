@@ -21,9 +21,14 @@ export interface HitLogEntry {
 export class HitLog {
     private entries: HitLogEntry[] = [];
 
-    constructor(private readonly capacity = 200) { }
+    constructor(
+        private readonly capacity = 200,
+        private readonly now: () => number = Date.now,
+    ) { }
 
     add(entry: HitLogEntry): void {
+        this.removeExpired();
+        if (this.isExpired(entry)) return;
         this.entries.push(entry);
         if (this.entries.length > this.capacity) {
             this.entries.splice(0, this.entries.length - this.capacity);
@@ -32,6 +37,7 @@ export class HitLog {
 
     /** 最近 limit 条，新的在前 */
     list(limit = 50): HitLogEntry[] {
+        this.removeExpired();
         const n = Math.max(1, Math.min(this.capacity, Math.floor(limit)));
         return this.entries.slice(-n).reverse();
     }
@@ -41,7 +47,17 @@ export class HitLog {
     }
 
     size(): number {
+        this.removeExpired();
         return this.entries.length;
+    }
+
+    private isExpired(entry: HitLogEntry): boolean {
+        const timestamp = Date.parse(entry.ts);
+        return Number.isFinite(timestamp) && timestamp < this.now() - 30 * 24 * 60 * 60 * 1000;
+    }
+
+    private removeExpired(): void {
+        this.entries = this.entries.filter((entry) => !this.isExpired(entry));
     }
 }
 

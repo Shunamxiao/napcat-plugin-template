@@ -44,7 +44,7 @@ const baseConfig = {
     replyDelayMinMs: 0,
     replyDelayMaxMs: 0,
     atOnly: false,
-    private: { enabled: true, defaultReply: "普通私聊兜底", whitelist: [], mergeWindowMs: 0 },
+    private: { enabled: true, whitelist: [], mergeWindowMs: 0 },
     group: { enabled: true, whitelist: [] },
     fallback: { privateText: "local-v1", groupAtText: "普通群兜底" },
     collect: { enabled: false, questions: [] },
@@ -206,6 +206,46 @@ console.log("ok 3 - revision 比对生效（变了才应用）");
 
 // ---------- 路由前置：注册 API ----------
 registerApiRoutes(ctx);
+assert.equal(routes.has("AUTH POST /config"), true, "配置写路由应要求 NapCat 鉴权");
+assert.equal(routes.has("AUTH POST /keyword-stats/reset"), true, "统计重置路由应要求 NapCat 鉴权");
+assert.equal(routes.has("AUTH POST /groups/:id"), true, "群配置写路由应要求 NapCat 鉴权");
+assert.equal(routes.has("AUTH POST /guard-policy"), true, "守卫策略写路由应要求 NapCat 鉴权");
+for (const path of ["/config", "/keyword-stats/reset", "/groups/:id", "/guard-policy"]) {
+    assert.equal(routes.has("POST " + path), false, path + " 不应注册为 NoAuth");
+}
+assert.equal(routes.has("POST /relay"), true, "relay 应继续使用 NoAuth 专用令牌路由");
+console.log("ok 3a - 四类管理写路由要求 NapCat 鉴权，relay 保持专用路由");
+
+// 服务端只读代理也要迁移旧私聊兜底，避免跨实例页面保存空值覆盖旧文案
+const currentServerRecord = serverRecord;
+serverRecord = {
+    ...serverRecord,
+    config: {
+        ...baseConfig,
+        accountAccessKey: "account-secret",
+        private: { ...baseConfig.private, defaultReply: "legacy-peer" },
+        fallback: { groupAtText: "群兜底" },
+        kbService: { ...baseConfig.kbService, token: "••••••" },
+        relay: { token: "relay-secret" },
+    },
+};
+let legacyView = await call("GET /server-config", { query: { uin: SELF } });
+assert.equal(legacyView.body.data.config.fallback.privateText, "legacy-peer", "缺少新字段时应迁移旧字段");
+assert.equal("defaultReply" in legacyView.body.data.config.private, false);
+assert.equal(legacyView.body.data.config.kbService.token, "••••••", "服务令牌必须打码");
+assert.equal(legacyView.body.data.config.accountAccessKey, "••••••", "账号插件令牌必须打码");
+assert.equal(legacyView.body.data.config.relay.token, "••••••", "回流令牌必须打码");
+serverRecord.config.kbService.token = "unique-service-secret";
+const realTokenView = await call("GET /server-config", { query: { uin: SELF } });
+assert.equal(realTokenView.body.data.config.kbService.token, "••••••", "真实服务令牌必须打码");
+assert.ok(!JSON.stringify(realTokenView.body).includes("unique-service-secret"), "响应不得包含真实服务令牌");
+serverRecord.config.kbService.token = "••••••";
+serverRecord.config.fallback.privateText = "current-peer";
+legacyView = await call("GET /server-config", { query: { uin: SELF } });
+assert.equal(legacyView.body.data.config.fallback.privateText, "current-peer", "新字段应优先于旧字段");
+assert.equal(legacyView.body.data.config.kbService.token, "••••••", "读取后仍应保留服务端令牌占位符");
+serverRecord = currentServerRecord;
+console.log("ok 3b - 服务端只读代理迁移旧私聊兜底字段");
 
 // ---------- 4) 保存代理 409：提示且不覆盖本地 ----------
 putConflictOnce = true;
@@ -240,7 +280,12 @@ serverRecord = {
     uin: "2622011721",
     nickname: "二号",
     revision: 2,
-    config: { ...baseConfig, cooldownSeconds: 8, fallback: { privateText: "peer-v1", groupAtText: "x" } },
+    config: {
+        ...baseConfig,
+        cooldownSeconds: 8,
+        fallback: { privateText: "peer-v1", groupAtText: "x" },
+        kbService: { ...baseConfig.kbService, token: "••••••" },
+    },
 };
 globalThis.fetch = (url, init = {}) => {
     const u = String(url);
@@ -259,6 +304,7 @@ assert.equal(res.statusCode, 200);
 assert.equal(cfg().cooldownSeconds, 99, "保存其他实例不应动本地配置");
 assert.equal(putCalls[0].body.config.cooldownSeconds, 20, "合并补丁应生效");
 assert.equal(putCalls[0].body.config.fallback.privateText, "peer-v1", "应以该号服务端配置为基底");
+assert.equal(putCalls[0].body.config.kbService.token, "••••••", "跨实例保存必须保留服务端令牌占位符");
 assert.equal(putCalls[0].body.expectedRevision, undefined, "未带 expectedRevision 时应无条件写");
 serverRecord = null;
 console.log("ok 5 - 保存代理成功链路（当前实例生效 / 其他实例写服务端）");
