@@ -9,9 +9,9 @@
  * 凭据与现有上报链路同源：pluginState.config.kbService。
  */
 
-import type { KbServiceConfig, PluginConfig } from '../types';
+import type { KbServiceConfig } from '../types';
 import { fetchBotConfig, importBotConfig, putBotConfig } from '../services/kb-client';
-import { isTokenPlaceholder, pluginState } from './state';
+import { isTokenPlaceholder, pluginState, sanitizeConfig } from './state';
 
 const DEFAULT_REFRESH_MS = 300000;
 const MIN_REFRESH_MS = 30000;
@@ -77,13 +77,15 @@ export function getBotConfigStatus(): BotConfigStatus {
  */
 function applyServerConfig(config: Record<string, unknown>, revision: number): boolean {
     const raw = { ...config } as Record<string, unknown>;
-    if (isObject(raw.kbService)) {
+    if (!raw.kbService) {
+        raw.kbService = pluginState.config.kbService;
+    } else if (isObject(raw.kbService)) {
         const kb = { ...raw.kbService };
         if (isTokenPlaceholder(kb.token)) kb.token = pluginState.config.kbService.token;
         raw.kbService = kb;
     }
     try {
-        pluginState.replaceConfig(raw as PluginConfig);
+        pluginState.replaceConfig(sanitizeConfig(raw));
     } catch (err) {
         status.lastError = err instanceof Error ? err.message : String(err);
         log('warn', '[配置] 服务端配置应用失败，按本地配置继续：' + status.lastError);

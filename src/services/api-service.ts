@@ -174,7 +174,7 @@ export function registerApiRoutes(ctx: NapCatPluginContext): void {
         try {
             const info = await ctx.actions.call(
                 'get_login_info', {}, ctx.adapterName, ctx.pluginManager.config
-            ) as { nickname?: unknown };
+            );
             if (typeof info?.nickname === 'string') nickname = info.nickname;
         } catch { /* OneBot 未就绪时走回退 */ }
         if (!nickname) nickname = botStatus.serverNickname;
@@ -551,7 +551,7 @@ export function registerApiRoutes(ctx: NapCatPluginContext): void {
                 {},
                 ctx.adapterName,
                 ctx.pluginManager.config,
-            ) as Array<{ group_id: number | string; group_name?: string }>;
+            );
             for (const group of list ?? []) {
                 groups.set(String(group.group_id), String(group.group_name ?? ''));
             }

@@ -112,7 +112,7 @@ async function fetchNickname(ctx: NapCatPluginContext, groupId: string, userId: 
             { group_id: groupId, user_id: userId, no_cache: false },
             ctx.adapterName,
             ctx.pluginManager.config,
-        ) as { card?: unknown; nickname?: unknown } | null;
+        );
         const card = typeof info?.card === 'string' ? info.card.trim() : '';
         if (card) return card;
         return typeof info?.nickname === 'string' ? info.nickname.trim() : '';
@@ -127,10 +127,10 @@ async function fetchGroupName(ctx: NapCatPluginContext, groupId: string): Promis
     try {
         const info = await ctx.actions.call(
             'get_group_info',
-            { group_id: groupId, no_cache: false },
+            { group_id: groupId },
             ctx.adapterName,
             ctx.pluginManager.config,
-        ) as { group_name?: unknown } | null;
+        );
         return typeof info?.group_name === 'string' ? info.group_name.trim() : '';
     } catch (e) {
         pluginState.logger.debug('[入群欢迎] 取群名失败:', e);

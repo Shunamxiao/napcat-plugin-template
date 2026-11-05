@@ -3,7 +3,7 @@
  */
 
 import type { OB11Message } from 'napcat-types/napcat-onebot';
-import type { NapCatPluginContext } from 'napcat-types/napcat-onebot/network/plugin/types';
+import type { NapCatPluginContext, SendMessageSegment, SendMsgParams } from 'napcat-types/napcat-onebot/network/plugin/types';
 import { pluginState } from '../core/state';
 import { isBlocked } from '../core/blocklist';
 import { pickReply, planReply, resolveSend, type Plan, type SendDecision } from '../core/escalation';
@@ -204,8 +204,8 @@ export async function handleMessage(ctx: NapCatPluginContext, event: OB11Message
             : null;
         if (plan?.kind === 'blocked') { recordSkip('service_blocked', '服务侧拉黑命中'); return; }
         const cooldownSeconds = resolveEffectiveGroupCooldown(config, groupId ?? '');
-        if (plan && isRuleCooldown(senderId, plan, cooldownSeconds)) {
-            recordSkip('cooldown', '同一用户命中同一规则仍在冷却期', 'rule=' + plan.rule.match);
+        if (hit && plan && isRuleCooldown(senderId, plan, cooldownSeconds)) {
+            recordSkip('cooldown', '同一用户命中同一规则仍在冷却期', 'rule=' + hit.match);
             return;
         }
         // 多账号同群去重:规则回复与 AI/兜底回复都只允许一个实例发
@@ -968,8 +968,8 @@ export function resolveImageSource(raw: string): string | null {
 }
 
 /** 回复内容 → OneBot segments；atUserId 非空时最前面加 at 段并补空格 */
-function buildSegments(content: { text: string; image?: string }, atUserId?: string): Array<Record<string, unknown>> {
-    const segments: Array<Record<string, unknown>> = [];
+function buildSegments(content: { text: string; image?: string }, atUserId?: string): SendMessageSegment[] {
+    const segments: SendMessageSegment[] = [];
     const atAdded = !!atUserId;
     if (atUserId) segments.push({ type: "at", data: { qq: atUserId } });
     if (content.text) {
@@ -993,7 +993,7 @@ async function replyMessage(ctx: NapCatPluginContext, event: OB11Message, conten
     }
     const segments = buildSegments(content, atUserId || undefined);
     if (!segments.length) return;
-    const params: Record<string, unknown> = { message: segments };
+    const params: SendMsgParams = { message: segments };
     if (event.message_type === "group" && event.group_id) {
         params.group_id = String(event.group_id);
         params.message_type = "group";
@@ -1018,7 +1018,7 @@ export async function sendRelayMessage(
 ): Promise<void> {
     const segments = buildSegments(content);
     if (!segments.length) throw new Error("消息内容为空");
-    const params: Record<string, unknown> = target.groupId
+    const params: SendMsgParams = target.groupId
         ? { message_type: "group", group_id: target.groupId, message: segments }
         : { message_type: "private", user_id: target.userId, message: segments };
     const result = await ctx.actions.call("send_msg", params, ctx.adapterName, ctx.pluginManager.config);

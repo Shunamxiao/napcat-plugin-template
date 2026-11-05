@@ -87,6 +87,11 @@ export interface GroupConfig {
     whitelistText?: string;
 }
 
+/** 旧群开关配置；群白名单属于全局 group 配置，不属于单群条目 */
+export interface GroupEnableConfig {
+    enabled: boolean;
+}
+
 /**
  * 未配置群（服务端无条目、本地 groupRules 也没有）的默认策略。
  * 默认只响应 @ 或引用机器人，避免普通群消息触发回复。
@@ -298,7 +303,7 @@ export interface PluginConfig {
     /** 群内容守卫（屏蔽词撤回） */
     guard: GuardConfig;
     /** 各群独立启用配置(群管理页使用) */
-    groupConfigs: Record<string, GroupConfig>;
+    groupConfigs: Record<string, GroupEnableConfig>;
     /** 群级规则：键为群号，未配置的群沿用全局规则 */
     groupRules?: Record<string, GroupRule>;
     /** 未配置群（服务端与本地都没有条目）的默认策略 */

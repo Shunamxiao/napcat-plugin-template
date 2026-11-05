@@ -4,6 +4,11 @@
         "module": "ESNext",
         "moduleResolution": "bundler",
         "baseUrl": ".",
+        "paths": {
+            "napcat-types/napcat-onebot": ["src/napcat-types/onebot.d.ts"],
+            "napcat-types/napcat-onebot/network/plugin/types": ["src/napcat-types/plugin.d.ts"],
+            "napcat-types/napcat-onebot/event/index": ["src/napcat-types/event.d.ts"]
+        },
         "strict": true,
         "esModuleInterop": true,
         "skipLibCheck": true,

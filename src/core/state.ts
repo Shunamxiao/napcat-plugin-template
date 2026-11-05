@@ -14,7 +14,7 @@ import fs from 'fs';
 import path from 'path';
 import type { NapCatPluginContext, PluginLogger } from 'napcat-types/napcat-onebot/network/plugin/types';
 import { DEFAULT_CONFIG, groupRulesToText, textToGroupRules } from '../config';
-import type { BlockUser, KeywordRule, PluginConfig, GroupConfig, GroupRule, RuleAction } from '../types';
+import type { BlockUser, KeywordRule, PluginConfig, GroupEnableConfig, GroupRule, RuleAction } from '../types';
 import type { CollectSession } from './collect';
 
 // ==================== 配置清洗工具 ====================
@@ -383,24 +383,21 @@ export function applyConfigPatch(current: PluginConfig, patch: Partial<PluginCon
     if (patch.private) merged.private = { ...current.private, ...patch.private };
     if (patch.group) merged.group = { ...current.group, ...patch.group };
     if (patch.groupWelcome) {
-        merged.groupWelcome = {
+        merged.groupWelcome = Object.assign({
             enabled: current.groupWelcome?.enabled ?? false,
             template: current.groupWelcome?.template ?? '',
-            ...patch.groupWelcome,
-        };
+        }, patch.groupWelcome);
     }
     if (patch.friendRequest) {
-        merged.friendRequest = {
+        merged.friendRequest = Object.assign({
             autoAccept: current.friendRequest?.autoAccept ?? false,
-            ...patch.friendRequest,
-        };
+        }, patch.friendRequest);
     }
     if (patch.fallback) {
-        merged.fallback = {
+        merged.fallback = Object.assign({
             privateText: current.fallback?.privateText ?? '',
             groupAtText: current.fallback?.groupAtText ?? '',
-            ...patch.fallback,
-        };
+        }, patch.fallback);
     }
     if (patch.collect) merged.collect = { ...current.collect, ...patch.collect };
     if (patch.relay) merged.relay = { ...current.relay, ...patch.relay };
@@ -521,7 +518,7 @@ class PluginState {
         try {
             const res = await this.ctx.actions.call(
                 'get_login_info', {}, this.ctx.adapterName, this.ctx.pluginManager.config
-            ) as { user_id?: number | string; nickname?: unknown };
+            );
             if (res?.user_id) {
                 this.selfId = String(res.user_id);
                 if (typeof res.nickname === 'string') this.nickname = res.nickname;
@@ -541,7 +538,7 @@ class PluginState {
         try {
             const res = await this.ctx.actions.call(
                 'get_login_info', {}, this.ctx.adapterName, this.ctx.pluginManager.config
-            ) as { nickname?: unknown };
+            );
             if (typeof res?.nickname === 'string') this.nickname = res.nickname;
         } catch { /* 未就绪：保持空串 */ }
         return this.nickname;
@@ -700,7 +697,7 @@ class PluginState {
     /**
      * 更新指定群的配置
      */
-    updateGroupConfig(groupId: string, config: Partial<GroupConfig>): void {
+    updateGroupConfig(groupId: string, config: Partial<GroupEnableConfig>): void {
         this.config.groupConfigs[groupId] = {
             ...this.config.groupConfigs[groupId],
             ...config,

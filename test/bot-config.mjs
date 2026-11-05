@@ -191,6 +191,16 @@ assert.equal(onDisk.fallback.privateText, "server-v1", "应回写本地缓存（
 assert.equal(getBotConfigStatus().serverNickname, "主号", "应记录服务端 nickname");
 console.log("ok 2 - 启动同步应用服务端配置并回写本地缓存");
 
+// 旧/部分服务端配置缺少 kbService 时，保留当前连接配置，但仍应用其他字段
+const currentKbService = { ...cfg().kbService };
+serverRecord = { ...serverRecord, config: { ...serverRecord.config, cooldownSeconds: 34 } };
+delete serverRecord.config.kbService;
+await syncBotConfig(true);
+assert.equal(cfg().cooldownSeconds, 34, "缺少 kbService 时仍应应用服务端其他字段");
+assert.deepEqual(cfg().kbService, currentKbService, "缺少 kbService 时应保留当前服务配置");
+serverRecord.config.kbService = { ...baseConfig.kbService, token: "••••••" };
+console.log("ok 2a - 服务端缺少 kbService 时保留当前服务配置");
+
 // ---------- 3) revision 未变不重复应用；变了才应用 ----------
 pluginState.updateConfig({ cooldownSeconds: 77 });
 logs.length = 0;
