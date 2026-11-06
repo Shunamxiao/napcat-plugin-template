@@ -113,7 +113,7 @@ NapCat 设置页和仪表盘使用同一套 React WebUI。页面包括：
 pnpm install
 pnpm typecheck
 pnpm build
-for f in test/*.mjs; do node "$f" || exit 1; done
+pnpm test                # vite build 后逐个执行 test/*.mjs，任一失败即退出
 ```
 
 `pnpm build` 使用 Vite 生成：

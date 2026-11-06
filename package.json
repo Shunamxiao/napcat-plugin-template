@@ -41,7 +41,8 @@
     "dev": "vite build --watch",
     "push": "vite build",
     "deploy": "vite build",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "vite build && for f in test/*.mjs; do node \"$f\" || { echo \"FAILED: $f\"; exit 1; }; done"
   },
   "pnpm": {
     "onlyBuiltDependencies": [

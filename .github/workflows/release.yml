@@ -62,6 +62,12 @@ jobs:
       - name: Build project
         run: pnpm run build
 
+      - name: Typecheck
+        run: pnpm run typecheck
+
+      - name: Test
+        run: pnpm test
+
       - name: Prepare release package
         env:
           PLUGIN_NAME: napcat-plugin-template
