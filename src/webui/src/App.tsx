@@ -15,7 +15,7 @@ export type PageId = 'basic' | 'private' | 'groups' | 'guard' | 'service' | 'log
 
 const pageConfig: Record<PageId, { title: string; desc: string }> = {
     basic: { title: '基础回复', desc: '总开关、冷却与回复延迟' },
-    private: { title: '私聊与关键词', desc: '私聊开关、白名单、AI 兜底、关键词规则与黑名单' },
+    private: { title: '私聊与关键词', desc: '私聊开关、白名单、首条引导、AI 兜底、关键词规则与黑名单' },
     groups: { title: '群规则', desc: '每群回复模式 / 未命中策略 / 兜底与欢迎，服务端为准' },
     guard: { title: '守卫与处罚', desc: '屏蔽词、命中动作与禁言策略' },
     service: { title: '服务与观测', desc: '服务连通、同步时间与 FAQ 命中计数' },

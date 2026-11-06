@@ -85,12 +85,21 @@ export interface KeywordRuleView {
     enabled?: boolean
 }
 
+export interface PrivateGuideView {
+    enabled: boolean
+    text: string
+    /** 同一用户的引导窗口（秒）；<=0 = 每条消息都引导 */
+    windowSeconds: number
+}
+
 export interface PrivateConfigView {
     enabled: boolean
     whitelist?: (number | string)[]
     whitelistText?: string
     /** 同一私聊用户连发合并窗口（毫秒）；0 = 关闭 */
     mergeWindowMs?: number
+    /** 私聊首条引导 */
+    guide?: PrivateGuideView
 }
 
 export interface AiTriggerView {

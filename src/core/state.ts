@@ -321,6 +321,17 @@ export function sanitizeConfig(raw: unknown): PluginConfig {
         if (typeof raw.private.whitelistText === 'string') out.private.whitelistText = raw.private.whitelistText;
         // 0 表示关闭合并；上限 60 秒，防止误配成超大值导致回复迟迟不发
         out.private.mergeWindowMs = clampInt(raw.private.mergeWindowMs, 0, 60000, out.private.mergeWindowMs);
+        // 首条引导：字段逐个白名单化，缺省沿用默认；文本保存时 trim，空文本由运行时视为不引导
+        const guideRaw = isObject(raw.private.guide) ? raw.private.guide : undefined;
+        const guideBase = out.private.guide;
+        out.private.guide = {
+            enabled: typeof guideRaw?.enabled === 'boolean' ? guideRaw.enabled : guideBase.enabled,
+            text: typeof guideRaw?.text === 'string' ? guideRaw.text.trim() : guideBase.text,
+            // <=0 合法，表示每条消息都引导；只拦非数字/NaN
+            windowSeconds: typeof guideRaw?.windowSeconds === 'number' && Number.isFinite(guideRaw.windowSeconds)
+                ? Math.round(guideRaw.windowSeconds)
+                : guideBase.windowSeconds,
+        };
     }
 
     if (isObject(raw.group)) {
@@ -380,7 +391,13 @@ export function sanitizeConfig(raw: unknown): PluginConfig {
  */
 export function applyConfigPatch(current: PluginConfig, patch: Partial<PluginConfig>): PluginConfig {
     const merged = { ...current, ...patch };
-    if (patch.private) merged.private = { ...current.private, ...patch.private };
+    if (patch.private) {
+        merged.private = { ...current.private, ...patch.private };
+        // guide 是嵌套对象：补丁只带部分字段时保留旧值，避免一次保存把其它字段重置成默认
+        if (patch.private.guide) {
+            merged.private.guide = { ...current.private.guide, ...patch.private.guide };
+        }
+    }
     if (patch.group) merged.group = { ...current.group, ...patch.group };
     if (patch.groupWelcome) {
         merged.groupWelcome = Object.assign({

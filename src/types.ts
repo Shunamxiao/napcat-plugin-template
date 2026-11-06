@@ -67,6 +67,16 @@ export interface BlocklistCacheConfig {
     lastSyncedAt: string;
 }
 
+/** 私聊首条引导：命中时只回引导文案，不进入关键词/FAQ/AI */
+export interface PrivateGuideConfig {
+    /** 总开关，默认 false */
+    enabled: boolean;
+    /** 引导文案；保存时 trim，空文本等同不引导 */
+    text: string;
+    /** 同一用户的引导窗口(秒)，窗口内只引导一次；<=0 = 每条消息都引导 */
+    windowSeconds: number;
+}
+
 /** 私聊配置 */
 export interface PrivateConfig {
     enabled: boolean;
@@ -76,6 +86,8 @@ export interface PrivateConfig {
     whitelistText?: string;
     /** 同一私聊用户连续消息合并窗口(毫秒)；3 秒内多条合并成一次问答，最多 5 条；0 = 关闭 */
     mergeWindowMs: number;
+    /** 首条引导：窗口内首次私聊只回引导文案，之后正常回答 */
+    guide: PrivateGuideConfig;
 }
 
 /** 群聊配置 */

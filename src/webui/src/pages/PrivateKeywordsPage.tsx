@@ -109,6 +109,9 @@ export default function PrivateKeywordsPage() {
     const [privateText, setPrivateText] = useState('')
     const [whitelistText, setWhitelistText] = useState('')
     const [mergeWindowMs, setMergeWindowMs] = useState('3000')
+    const [guideEnabled, setGuideEnabled] = useState(false)
+    const [guideText, setGuideText] = useState('')
+    const [guideWindowSeconds, setGuideWindowSeconds] = useState('1800')
     const [aiPrivate, setAiPrivate] = useState(false)
     const [groupAtOnly, setGroupAtOnly] = useState(true)
     const [rows, setRows] = useState<KeywordRow[]>([])
@@ -127,6 +130,9 @@ export default function PrivateKeywordsPage() {
             // 以数组为准生成文本，避免盘上的 whitelistText/blacklistText 陈旧
             setWhitelistText((data.private?.whitelist ?? []).map(String).join('\n'))
             setMergeWindowMs(String(data.private?.mergeWindowMs ?? 3000))
+            setGuideEnabled(data.private?.guide?.enabled === true)
+            setGuideText(data.private?.guide?.text ?? '')
+            setGuideWindowSeconds(String(data.private?.guide?.windowSeconds ?? 1800))
             setAiPrivate(data.aiTrigger?.private === true)
             setGroupAtOnly(data.aiTrigger?.groupAtOnly !== false)
             setRows(toRows(data.keywords))
@@ -255,6 +261,8 @@ export default function PrivateKeywordsPage() {
         const whitelist = parseIdLines(whitelistText)
         const blacklist = parseIdLines(blacklistText)
         const windowMs = Math.min(60000, Math.max(0, Math.floor(Number(mergeWindowMs) || 0)))
+        const guideWindow = Number(guideWindowSeconds)
+        const guideWindowValue = Number.isFinite(guideWindow) ? Math.round(guideWindow) : 0
         setSaving(true)
         try {
             const result = await saveBotConfig({
@@ -262,7 +270,12 @@ export default function PrivateKeywordsPage() {
                     enabled: privateEnabled,
                     whitelist,
                     whitelistText,
-                    mergeWindowMs: windowMs
+                    mergeWindowMs: windowMs,
+                    guide: {
+                        enabled: guideEnabled,
+                        text: guideText.trim(),
+                        windowSeconds: guideWindowValue
+                    }
                 },
                 fallback: { privateText },
                 aiTrigger: { private: aiPrivate },
@@ -357,6 +370,40 @@ export default function PrivateKeywordsPage() {
                                 setMergeWindowMs(String(value))
                             }}
                         />
+                    </div>
+                    <div className="rounded-lg border border-gray-200 dark:border-gray-800 p-4 space-y-4">
+                        <ToggleRow
+                            label="首条引导看群公告"
+                            desc="同一用户在该窗口内第一次私聊只回引导文案，不进入关键词、FAQ 与 AI；窗口外再次引导"
+                            checked={guideEnabled}
+                            onChange={setGuideEnabled}
+                        />
+                        <div>
+                            <div className="text-sm font-medium text-gray-800 dark:text-gray-200 mb-1">引导文案</div>
+                            <div className="text-xs text-gray-400 mb-2">保存时自动去掉首尾空白；留空 = 不引导</div>
+                            <textarea
+                                className="input-field"
+                                rows={4}
+                                value={guideText}
+                                onChange={(e) => setGuideText(e.target.value)}
+                                placeholder="资源都在群公告的群文件和腾讯文档里，先看公告。"
+                            />
+                            <div className="text-[11px] text-gray-400 mt-1 text-right">{guideText.length} 字</div>
+                        </div>
+                        <div>
+                            <div className="text-sm font-medium text-gray-800 dark:text-gray-200 mb-1">引导窗口（秒）</div>
+                            <div className="text-xs text-gray-400 mb-2">同一用户在该窗口内只引导一次；0 或负数 = 每条消息都引导，默认 1800 秒（30 分钟）</div>
+                            <input
+                                className="input-field"
+                                type="number"
+                                value={guideWindowSeconds}
+                                onChange={(e) => setGuideWindowSeconds(e.target.value)}
+                                onBlur={() => {
+                                    const value = Number(guideWindowSeconds)
+                                    setGuideWindowSeconds(String(Number.isFinite(value) ? Math.round(value) : 0))
+                                }}
+                            />
+                        </div>
                     </div>
                 </div>
             </div>

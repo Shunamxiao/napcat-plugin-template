@@ -106,7 +106,16 @@ export const DEFAULT_CONFIG: PluginConfig = {
         { match: "下载", reply: "群里没有找到吗，先直接去https://apks.cc搜索下载下，这个是群里小伙伴给我的，下载后使用uu安装更新都行" },
         { match: "没找到", reply: "群里没有找到吗，先直接去https://apks.cc搜索下载下，这个是群里小伙伴给我的，下载后使用uu安装更新都行" },
     ],
-    private: { enabled: false, whitelist: [], mergeWindowMs: 3000 },
+    private: {
+        enabled: false,
+        whitelist: [],
+        mergeWindowMs: 3000,
+        guide: {
+            enabled: false,
+            text: "资源都在群公告的群文件和腾讯文档里，先看公告。",
+            windowSeconds: 1800,
+        },
+    },
     group: { enabled: true, whitelist: [] },
     blacklist: [],
     crossAccountDedup: true,

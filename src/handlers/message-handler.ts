@@ -342,6 +342,46 @@ export function clearPrivateMerge(): void {
     privateMergeBuffers.clear();
 }
 
+/** 私聊首条引导：进程内记录每个用户上次引导时间，不落盘、不加定时器 */
+const privateGuideSentAt = new Map<string, number>();
+
+/** 引导窗口(毫秒)；<=0 表示每条消息都引导 */
+function privateGuideWindowMs(): number {
+    const n = Number(pluginState.config.private?.guide?.windowSeconds ?? 0);
+    if (!Number.isFinite(n) || n <= 0) return 0;
+    return Math.floor(n * 1000);
+}
+
+/**
+ * 占用一次引导机会：需要引导时返回 trim 后的文案并记录本次时间，否则返回 null。
+ * 开关关闭、文案为空、或同一用户在窗口内已引导过 → null。
+ */
+function claimPrivateGuide(senderId: string, now = Date.now()): string | null {
+    const guide = pluginState.config.private?.guide;
+    if (!guide?.enabled) return null;
+    const text = (guide.text ?? '').trim();
+    if (!text) return null;
+    const windowMs = privateGuideWindowMs();
+    if (windowMs > 0) {
+        // 顺带清理过期条目，防止长期运行时 Map 无限增长
+        for (const [key, ts] of privateGuideSentAt) {
+            if (now - ts >= windowMs) privateGuideSentAt.delete(key);
+        }
+        const last = privateGuideSentAt.get(senderId);
+        if (last !== undefined && now - last < windowMs) return null;
+    } else {
+        // 每条消息都引导：不需要历史时间
+        privateGuideSentAt.clear();
+    }
+    privateGuideSentAt.set(senderId, now);
+    return text;
+}
+
+/** 插件卸载时清空引导窗口记录，热重载后重新计算 */
+export function clearPrivateGuide(): void {
+    privateGuideSentAt.clear();
+}
+
 /** 私聊单次问答：合并后的文本也走原有冷却 / 配额 / 防互刷链路 */
 async function processPrivateMessage(ctx: NapCatPluginContext, event: OB11Message, text: string): Promise<void> {
     const config = pluginState.config;
@@ -352,6 +392,19 @@ async function processPrivateMessage(ctx: NapCatPluginContext, event: OB11Messag
     if (!checkWhitelist(config.private.whitelist, senderId)) return;
     // 追问中的用户消息优先作为答案消费，不再走关键词/FAQ
     if (await consumeCollectAnswer(ctx, event, collectKey('private', senderId), senderId, undefined, text, 'private')) return;
+    // 首条引导：窗口内首次私聊只回引导文案，不进入关键词/FAQ/AI，不消耗关键词冷却与服务配额
+    const guideText = claimPrivateGuide(senderId);
+    if (guideText) {
+        hitLog.add({
+            ts: new Date().toISOString(),
+            channel: 'private',
+            userId: senderId,
+            result: 'answered',
+            detail: ('guide ' + guideText).slice(0, 80),
+        });
+        scheduleReply(ctx, event, { text: guideText }, '[私聊] ' + senderId + ' 引导', 'rule');
+        return;
+    }
     const hit = matchKeywords(config.keywords, text);
     if (hit) recordKeywordHit(hit, 'private');
     const plan = planReply({

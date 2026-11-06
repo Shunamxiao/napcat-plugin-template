@@ -38,7 +38,7 @@ import { startKeywordReport, stopKeywordReport } from './core/keyword-report';
 import { startTrafficReport, stopTrafficReport } from './core/traffic-stats';
 import { startBlocklistSync, stopBlocklistSync } from './core/blocklist';
 import { startGuardWordsSync, stopGuardWordsSync } from './core/guard-words';
-import { clearPrivateMerge, handleMessage } from './handlers/message-handler';
+import { clearPrivateGuide, clearPrivateMerge, handleMessage } from './handlers/message-handler';
 import { handleOneBotEvent } from './handlers/event-handler';
 import { registerApiRoutes } from './services/api-service';
 import type { PluginConfig } from './types';
@@ -149,6 +149,7 @@ export const plugin_cleanup: PluginModule['plugin_cleanup'] = async (ctx) => {
         clearGuardPenalty();
         hitLog.clear();
         clearPrivateMerge();
+        clearPrivateGuide();
         // 取消防抖并立即落盘，正常卸载不丢最后一个窗口的命中
         shutdownKeywordStats();
         pluginState.cleanup();
@@ -201,6 +202,8 @@ export const plugin_set_config: PluginModule['plugin_set_config'] = async (ctx, 
     const g = syncList(cfg.group?.whitelist ?? [], cfg.group?.whitelistText);
     const b = syncList(cfg.blacklist ?? [], cfg.blacklistText);
     cfg.private = { ...(cfg.private ?? DEFAULT_CONFIG.private), whitelist: p.list, whitelistText: p.text };
+    // 原生面板没有引导字段：未提交时沿用当前值，避免一次保存把引导配置重置成默认
+    if (!cfg.private.guide) cfg.private.guide = pluginState.config.private.guide;
     cfg.group = { ...(cfg.group ?? DEFAULT_CONFIG.group), whitelist: g.list, whitelistText: g.text };
     cfg.blacklist = b.list;
     cfg.blacklistText = b.text;
@@ -344,7 +347,7 @@ export { initKeywordStats, recordKeywordHit, snapshotKeywordStats, resetKeywordS
 export { buildKeywordReport, reportKeywordStatsOnce, startKeywordReport, stopKeywordReport } from './core/keyword-report';
 export { hourBucket, recordTrafficIncoming, recordTrafficReply, recordTrafficRuleHit, snapshotTraffic, buildTrafficPayload, commitTrafficReport, resetTraffic, reportTrafficOnce, startTrafficReport, stopTrafficReport } from './core/traffic-stats';
 export { buildWelcomeMessage, resolveWelcome, renderWelcomeTemplate } from './handlers/event-handler';
-export { handleMessage, resolveImageSource, sendRelayMessage, clearPrivateMerge, SERVICE_DOWN_REPLY } from './handlers/message-handler';
+export { handleMessage, resolveImageSource, sendRelayMessage, clearPrivateMerge, clearPrivateGuide, SERVICE_DOWN_REPLY } from './handlers/message-handler';
 export { registerApiRoutes } from './services/api-service';
 export { fetchGroupConfig } from './services/kb-client';
 export { notifyHandoff, askServiceOutcome, fetchGuardWords } from './services/kb-client';

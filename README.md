@@ -11,6 +11,9 @@
 - 支持把同一用户短时间内的连续消息合并处理，默认窗口为 3 秒，最多 5 条。
 - 关键词、知识库和 AI 都没有结果时使用 `fallback.privateText`。
 - 老配置的 `private.defaultReply` 仅在读取时迁移到 `fallback.privateText`，保存时不再写旧字段。
+- 可选首条引导 `private.guide`：`enabled` 开关、`text` 引导文案（保存时 trim，空文本等同不引导）、`windowSeconds` 窗口秒数（默认 1800；小于等于 0 表示每条消息都引导）。引导命中时只发文案，不进入关键词、FAQ 或 AI，也不消耗关键词冷却与服务配额；同一用户在窗口内只引导一次，窗口外再次引导。
+
+私聊判定顺序（`src/handlers/message-handler.ts`）：忽略/黑名单 → 服务侧拉黑 → 自回声 → 私聊开关 → 白名单 → 连发合并 → 转人工追问 → 首条引导 → 关键词 → FAQ/AI → 兜底。
 
 ### 群聊
 
