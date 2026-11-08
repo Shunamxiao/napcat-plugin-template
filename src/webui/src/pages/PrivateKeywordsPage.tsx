@@ -1,5 +1,5 @@
 import { Fragment, useCallback, useEffect, useState } from 'react'
-import { authFetch, fetchBotConfigView, noAuthFetch, saveBotConfig } from '../utils/api'
+import { fetchBotConfigView, noAuthFetch, saveBotConfig } from '../utils/api'
 import { showToast } from '../hooks/useToast'
 import { useAccount } from '../hooks/useAccount'
 import type { KeywordMatchType, KeywordRuleView } from '../types'
@@ -298,7 +298,7 @@ export default function PrivateKeywordsPage() {
     const resetStats = async () => {
         if (!window.confirm('确定清空所有关键词命中统计？此操作不可撤销。')) return
         try {
-            const res = await authFetch('/keyword-stats/reset', {
+            const res = await noAuthFetch('/keyword-stats/reset', {
                 method: 'POST',
                 body: JSON.stringify({})
             })

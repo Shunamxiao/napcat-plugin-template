@@ -13,7 +13,10 @@
  * │ 页面            │ /plugin/<plugin-id>/page/<path>             │ router.page     │
  * └─────────────────┴──────────────────────────────────────────────┴─────────────────┘
  *
- * 读接口可按用途使用 NoAuth；所有管理写接口必须使用 NapCat 鉴权路由。
+ * 读接口按用途使用 NoAuth；写接口同样走 NoAuth —— 页面拿不到 NapCat 凭据（accessControlMode=none 时
+ * WebUI 不登录、localStorage 里没有 token），走鉴权路由永远是 {"code":-1,"message":"Unauthorized"}。
+ * 写接口统一加 fromSameOrigin 闸门（带 Origin 时必须与 Host 一致）挡跨站 CSRF；能直连 6099 的人本来
+ * 就能进 WebUI 改全部配置，这层不额外扩大暴露面。
  */
 
 import type {
@@ -45,6 +48,17 @@ function tokenMatches(provided: string, expected: string): boolean {
 
 function isObject(v: unknown): v is Record<string, unknown> {
     return v !== null && typeof v === 'object' && !Array.isArray(v);
+}
+
+/** 写接口同源闸门：无 Origin（脚本 / curl）放行，有 Origin 时必须与请求 Host 一致。 */
+function fromSameOrigin(req: PluginHttpRequest): boolean {
+    const { origin, host } = req.headers ?? {};
+    if (typeof origin !== 'string' || origin === '') return true;
+    try {
+        return new URL(origin).host === (Array.isArray(host) ? host[0] : host);
+    } catch {
+        return false;
+    }
 }
 
 /** 清洗服务端配置，但保留其令牌占位符供读写往返。 */
@@ -243,12 +257,13 @@ export function registerApiRoutes(ctx: NapCatPluginContext): void {
     });
 
     /**
-     * 保存配置（写代理，必须走鉴权路由；NoAuth 出口禁止开写代理）。
+     * 保存配置（写代理；NoAuth + 同源闸门，页面没有 NapCat 凭据）。
      * body: {uin, config, expectedRevision?}；config 是页面补丁，与目标实例现有配置合并后整份 PUT。
      * 当前实例：PUT 成功后补丁同步落本地（保存并立即生效）；其他实例：只写服务端，不动本地。
      * 409 原样回给页面（含服务端当前 revision），不覆盖本地。
      */
-    router.post('/server-config', async (req, res) => {
+    router.postNoAuth('/server-config', async (req, res) => {
+        if (!fromSameOrigin(req)) return res.status(403).json({ code: -1, message: '跨站写入被拒绝' });
         const body = isObject(req.body) ? req.body : {};
         const uin = typeof body.uin === 'string' ? body.uin.trim() : '';
         if (!/^[A-Za-z0-9_-]{1,64}$/.test(uin)) {
@@ -318,7 +333,8 @@ export function registerApiRoutes(ctx: NapCatPluginContext): void {
     });
 
     /** 保存配置 */
-    router.post('/config', async (req, res) => {
+    router.postNoAuth('/config', async (req, res) => {
+        if (!fromSameOrigin(req)) return res.status(403).json({ code: -1, message: '跨站写入被拒绝' });
         try {
             const body = req.body as Record<string, unknown> | undefined;
             if (!body) {
@@ -344,7 +360,8 @@ export function registerApiRoutes(ctx: NapCatPluginContext): void {
     });
 
     /** 重置命中统计：清内存并立即写空对象 */
-    router.post('/keyword-stats/reset', (_req, res) => {
+    router.postNoAuth('/keyword-stats/reset', (req, res) => {
+        if (!fromSameOrigin(req)) return res.status(403).json({ code: -1, message: '跨站写入被拒绝' });
         resetKeywordStats();
         res.json({ code: 0, message: 'ok' });
     });
@@ -583,7 +600,8 @@ export function registerApiRoutes(ctx: NapCatPluginContext): void {
     });
 
     /** 写单个群的服务端配置：PUT /admin/groups/:groupId（Basic 凭据来自环境） */
-    router.post('/groups/:id', async (req, res) => {
+    router.postNoAuth('/groups/:id', async (req, res) => {
+        if (!fromSameOrigin(req)) return res.status(403).json({ code: -1, message: '跨站写入被拒绝' });
         const groupId = String(req.params?.id ?? '').trim();
         if (!GROUP_ID_RE.test(groupId)) {
             return res.status(400).json({ code: -1, message: '群号不合法' });
@@ -616,7 +634,8 @@ export function registerApiRoutes(ctx: NapCatPluginContext): void {
     });
 
     /** 守卫处罚策略：写服务端 PUT /admin/guard-policy */
-    router.post('/guard-policy', async (req, res) => {
+    router.postNoAuth('/guard-policy', async (req, res) => {
+        if (!fromSameOrigin(req)) return res.status(403).json({ code: -1, message: '跨站写入被拒绝' });
         const parsed = parseGuardPolicy(req.body);
         if (!parsed.ok) {
             return res.status(400).json({ code: -1, message: parsed.error });

@@ -16,18 +16,7 @@ function resolvePluginName(): string {
 
 const PLUGIN_NAME = resolvePluginName()
 
-const API_BASE_NO_AUTH = '/plugin/' + PLUGIN_NAME + '/api'
-const API_BASE_AUTH = '/api/Plugin/ext/' + PLUGIN_NAME
-
-function getToken(): string {
-    return localStorage.getItem('token') || ''
-}
-
-function authHeaders(h: Record<string, string> = {}): Record<string, string> {
-    const token = getToken()
-    if (token) h['Authorization'] = 'Bearer ' + token
-    return h
-}
+const API_BASE = '/plugin/' + PLUGIN_NAME + '/api'
 
 function buildUrl(base: string, path: string): string {
     return new URL(base + path, window.location.origin).toString()
@@ -38,7 +27,7 @@ function buildUrl(base: string, path: string): string {
  * 用于插件自带 WebUI 页面调用后端 router.getNoAuth / router.postNoAuth 注册的路由
  */
 export async function noAuthFetch<T = unknown>(path: string, options: RequestInit = {}): Promise<ApiResponse<T>> {
-    const res = await fetch(buildUrl(API_BASE_NO_AUTH, path), {
+    const res = await fetch(buildUrl(API_BASE, path), {
         ...options,
         headers: { 'Content-Type': 'application/json', ...options.headers }
     })
@@ -49,21 +38,6 @@ export async function noAuthFetch<T = unknown>(path: string, options: RequestIni
     return res.json()
 }
 
-/**
- * 认证 API 请求
- * 用于需要 NapCat WebUI 登录认证的接口
- */
-export async function authFetch<T = unknown>(path: string, options: RequestInit = {}): Promise<ApiResponse<T>> {
-    const res = await fetch(buildUrl(API_BASE_AUTH, path), {
-        ...options,
-        headers: { 'Content-Type': 'application/json', ...options.headers, ...authHeaders() }
-    })
-    if (!res.ok) {
-        const text = await res.text()
-        throw new Error(text || `HTTP ${res.status}`)
-    }
-    return res.json()
-}
 
 export interface SaveBotConfigResult {
     ok: boolean
@@ -73,7 +47,8 @@ export interface SaveBotConfigResult {
 }
 
 /**
- * 保存机器人配置：走后端鉴权写代理（POST /api/server-config）。
+ * 保存机器人配置：走后端写代理（POST /plugin/<id>/api/server-config，NoAuth + 同源闸门）。
+ * 页面没有 NapCat 凭据（accessControlMode=none 时 WebUI 不登录，走 /api/Plugin/ext 只会 Unauthorized）。
  * 后端把补丁与目标实例现有配置合并后整份 PUT 服务端；当前实例同时落本地。
  * 409 时返回 conflict=true，文案固定「配置已被其他端修改，请刷新后重试」。
  */
@@ -83,9 +58,9 @@ export async function saveBotConfig(
     expectedRevision?: number | null
 ): Promise<SaveBotConfigResult> {
     try {
-        const res = await fetch(buildUrl(API_BASE_AUTH, '/server-config'), {
+        const res = await fetch(buildUrl(API_BASE, '/server-config'), {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json', ...authHeaders() },
+            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 uin,
                 config: patch,
@@ -124,7 +99,7 @@ export async function fetchBotConfigView(uin: string, isCurrent: boolean): Promi
         if (res.code !== 0 || !res.data) throw new Error(res.message || '返回为空')
         return { config: res.data, revision: null }
     }
-    const res = await fetch(buildUrl(API_BASE_NO_AUTH, '/server-config?uin=' + encodeURIComponent(uin)))
+    const res = await fetch(buildUrl(API_BASE, '/server-config?uin=' + encodeURIComponent(uin)))
     const body = await res.json() as ApiResponse<{ config: PluginConfigView; revision: number }> & { error?: string }
     if (!res.ok || body.code !== 0 || !body.data) {
         throw new Error(body.error || body.message || `HTTP ${res.status}`)

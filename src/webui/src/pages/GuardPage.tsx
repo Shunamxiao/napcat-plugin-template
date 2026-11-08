@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { authFetch, fetchBotConfigView, noAuthFetch, saveBotConfig } from '../utils/api'
+import { fetchBotConfigView, noAuthFetch, saveBotConfig } from '../utils/api'
 import { showToast } from '../hooks/useToast'
 import { useAccount } from '../hooks/useAccount'
 import type { GuardPolicy, PluginConfigView } from '../types'
@@ -54,7 +54,7 @@ export default function GuardPage() {
             if (!result.ok) throw new Error(result.message)
             // 处罚策略是服务端全局状态，与账号无关；编辑其他实例时不顺手动它
             if (isCurrent) {
-                const res = await authFetch<GuardPolicy>('/guard-policy', {
+                const res = await noAuthFetch<GuardPolicy>('/guard-policy', {
                     method: 'POST',
                     body: JSON.stringify({
                         windowSeconds: policy.windowSeconds,

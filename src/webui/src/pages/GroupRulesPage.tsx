@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { authFetch, fetchBotConfigView, noAuthFetch, saveBotConfig } from '../utils/api'
+import { fetchBotConfigView, noAuthFetch, saveBotConfig } from '../utils/api'
 import { showToast } from '../hooks/useToast'
 import { useAccount } from '../hooks/useAccount'
 import type {
@@ -170,7 +170,7 @@ export default function GroupRulesPage() {
         setSavingId(row.groupId)
         try {
             const fallbackText = row.fallbackText && row.fallbackText.trim() ? row.fallbackText.trim() : null
-            const res = await authFetch<GroupRuleEntry>(`/groups/${encodeURIComponent(row.groupId)}`, {
+            const res = await noAuthFetch<GroupRuleEntry>(`/groups/${encodeURIComponent(row.groupId)}`, {
                 method: 'POST',
                 body: JSON.stringify({
                     mode: row.mode,

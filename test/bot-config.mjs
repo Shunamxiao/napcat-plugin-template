@@ -215,16 +215,27 @@ assert.equal(getBotConfigStatus().revision, 4);
 console.log("ok 3 - revision 比对生效（变了才应用）");
 
 // ---------- 路由前置：注册 API ----------
+// 页面没有 NapCat 凭据（accessControlMode=none 时 WebUI 不登录），写路由必须走 NoAuth；
+// 鉴权路由会让页面永远拿到 Unauthorized（2026-11-08 老板报「保存失败」的根因）。
 registerApiRoutes(ctx);
-assert.equal(routes.has("AUTH POST /config"), true, "配置写路由应要求 NapCat 鉴权");
-assert.equal(routes.has("AUTH POST /keyword-stats/reset"), true, "统计重置路由应要求 NapCat 鉴权");
-assert.equal(routes.has("AUTH POST /groups/:id"), true, "群配置写路由应要求 NapCat 鉴权");
-assert.equal(routes.has("AUTH POST /guard-policy"), true, "守卫策略写路由应要求 NapCat 鉴权");
-for (const path of ["/config", "/keyword-stats/reset", "/groups/:id", "/guard-policy"]) {
-    assert.equal(routes.has("POST " + path), false, path + " 不应注册为 NoAuth");
+for (const path of ["/config", "/keyword-stats/reset", "/groups/:id", "/guard-policy", "/server-config"]) {
+    assert.equal(routes.has("POST " + path), true, path + " 应注册为 NoAuth 写路由");
+    assert.equal(routes.has("AUTH POST " + path), false, path + " 不应再注册为鉴权路由");
 }
 assert.equal(routes.has("POST /relay"), true, "relay 应继续使用 NoAuth 专用令牌路由");
-console.log("ok 3a - 四类管理写路由要求 NapCat 鉴权，relay 保持专用路由");
+console.log("ok 3a - 管理写路由走 NoAuth，relay 保持专用令牌路由");
+
+// 同源闸门：外站 Origin 的写入 403，本站 Origin 与无 Origin（脚本）放行
+const crossOrigin = await call("POST /keyword-stats/reset", {
+    headers: { origin: "http://evil.example", host: "192.168.1.204:6099" },
+});
+assert.equal(crossOrigin.statusCode, 403, "跨站写入应被拒绝");
+const sameOrigin = await call("POST /keyword-stats/reset", {
+    headers: { origin: "http://192.168.1.204:6099", host: "192.168.1.204:6099" },
+});
+assert.equal(sameOrigin.statusCode, 200, "同源写入应放行");
+assert.equal(sameOrigin.body.code, 0, "同源写入应执行成功");
+console.log("ok 3b - 同源闸门拦跨站、放同源与脚本");
 
 // 服务端只读代理也要迁移旧私聊兜底，避免跨实例页面保存空值覆盖旧文案
 const currentServerRecord = serverRecord;
@@ -259,7 +270,7 @@ console.log("ok 3b - 服务端只读代理迁移旧私聊兜底字段");
 
 // ---------- 4) 保存代理 409：提示且不覆盖本地 ----------
 putConflictOnce = true;
-let res = await call("AUTH POST /server-config", {
+let res = await call("POST /server-config", {
     body: { uin: SELF, config: { cooldownSeconds: 99 }, expectedRevision: 4 },
 });
 assert.equal(res.statusCode, 409, "409 应原样回给页面");
@@ -272,7 +283,7 @@ console.log("ok 4 - 409 提示且不覆盖本地");
 
 // ---------- 5) 保存代理成功：整份合并 PUT + 当前实例落本地 ----------
 logs.length = 0;
-res = await call("AUTH POST /server-config", {
+res = await call("POST /server-config", {
     body: { uin: SELF, config: { cooldownSeconds: 99 }, expectedRevision: 4 },
 });
 assert.equal(res.statusCode, 200);
@@ -307,7 +318,7 @@ globalThis.fetch = (url, init = {}) => {
     }
     throw new TypeError("fetch failed（" + method + " " + u + "）");
 };
-res = await call("AUTH POST /server-config", {
+res = await call("POST /server-config", {
     body: { uin: "2622011721", config: { cooldownSeconds: 20 } },
 });
 assert.equal(res.statusCode, 200);
