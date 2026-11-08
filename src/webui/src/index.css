@@ -519,3 +519,39 @@ select.input-field {
     background-repeat: no-repeat;
     background-position: right 8px center;
 }
+/* ========== Plain 文字按钮（2026-11-08 全量重构新增） ========== */
+.btn-plain {
+    @apply inline-flex items-center gap-1.5 px-1.5 py-1 rounded-md text-xs font-medium cursor-pointer border-none bg-transparent text-gray-500 dark:text-gray-400;
+    transition: color 0.2s var(--ease-smooth), background-color 0.2s var(--ease-smooth);
+}
+
+.btn-plain:hover {
+    @apply text-gray-800 dark:text-gray-200 bg-gray-100 dark:bg-gray-800;
+}
+
+.btn:disabled,
+.btn-plain:disabled {
+    @apply opacity-50 cursor-not-allowed;
+    box-shadow: none;
+    transform: none;
+}
+
+/* 表格行悬浮（群规则/关键词/日志共用） */
+.row-hover {
+    transition: background-color 0.15s var(--ease-smooth);
+}
+
+.row-hover:hover {
+    @apply bg-gray-50 dark:bg-[#232326];
+}
+
+/* 抽屉里的小输入框：宽度交给使用处（w-20/w-28/flex-1）。这里不写 w-full，
+   否则同一行的多个输入框各自撑满，全部换行。 */
+.input-sm {
+    @apply px-2.5 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-[#1e1e20] text-gray-900 dark:text-white text-xs;
+}
+
+.input-sm:focus {
+    @apply outline-none border-primary;
+    box-shadow: 0 0 0 3px rgba(251, 114, 153, 0.15);
+}

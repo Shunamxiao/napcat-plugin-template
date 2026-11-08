@@ -1,176 +1,180 @@
 import { useEffect, useState } from 'react'
 import Header from './components/Header'
 import ToastContainer from './components/ToastContainer'
-import BasicPage from './pages/BasicPage'
-import GroupRulesPage from './pages/GroupRulesPage'
+import OverviewPage from './pages/OverviewPage'
+import ReplyPage from './pages/ReplyPage'
+import PrivatePage from './pages/PrivatePage'
+import GroupsPage from './pages/GroupsPage'
 import GuardPage from './pages/GuardPage'
+import SafetyPage from './pages/SafetyPage'
 import ServicePage from './pages/ServicePage'
 import LogsPage from './pages/LogsPage'
-import PrivateKeywordsPage from './pages/PrivateKeywordsPage'
 import { AccountProvider, useAccount } from './hooks/useAccount'
 import { useTheme } from './hooks/useTheme'
-import { IconActivity, IconAlert, IconDashboard, IconGroup, IconSettings, IconTerminal } from './components/icons'
+import { useHashRoute, type PageId } from './router'
+import {
+    IconActivity, IconAlert, IconDashboard, IconGroup, IconLock, IconSettings, IconShield, IconTerminal,
+} from './components/icons'
 
-export type PageId = 'basic' | 'private' | 'groups' | 'guard' | 'service' | 'logs'
-
-const pageConfig: Record<PageId, { title: string; desc: string }> = {
-    basic: { title: '基础回复', desc: '总开关、冷却与回复延迟' },
-    private: { title: '私聊与关键词', desc: '私聊开关、白名单、首条引导、AI 兜底、关键词规则与黑名单' },
-    groups: { title: '群规则', desc: '每群回复模式 / 未命中策略 / 兜底与欢迎，服务端为准' },
-    guard: { title: '守卫与处罚', desc: '屏蔽词、命中动作与禁言策略' },
-    service: { title: '服务与观测', desc: '服务连通、同步时间与 FAQ 命中计数' },
-    logs: { title: '命中日志', desc: '最近 50 条命中与未命中记录' }
+const META: Record<PageId, { title: string; desc: string }> = {
+    overview: { title: '概览', desc: '实例状态、今日处理量与近七天流量' },
+    reply: { title: '回复规则', desc: '总开关、关键词、兜底话术与转人工追问' },
+    private: { title: '私聊', desc: '私聊开关、白名单、首条引导与连发合并' },
+    groups: { title: '群规则', desc: '按群覆盖模式、策略与欢迎语，可批量改和导入导出' },
+    guard: { title: '内容守卫', desc: '屏蔽词、命中动作与违规处罚' },
+    safety: { title: '安全与风控', desc: '黑名单、发送熔断、对刷熔断与去重' },
+    service: { title: '服务与运维', desc: '知识库/AI 服务、同步状态、回流令牌与配置快照' },
+    logs: { title: '命中日志', desc: '最近命中记录，可按来源/范围筛选与导出' },
 }
 
-const tabs: { id: PageId; label: string; icon: (props: { size?: number }) => JSX.Element }[] = [
-    { id: 'basic', label: '基础回复', icon: (p) => <IconDashboard {...p} /> },
-    { id: 'private', label: '私聊与关键词', icon: (p) => <IconSettings {...p} /> },
-    { id: 'groups', label: '群规则', icon: (p) => <IconGroup {...p} /> },
-    { id: 'guard', label: '守卫与处罚', icon: (p) => <IconAlert {...p} /> },
-    { id: 'service', label: '服务与观测', icon: (p) => <IconActivity {...p} /> },
-    { id: 'logs', label: '命中日志', icon: (p) => <IconTerminal {...p} /> }
+const NAV: { group: string; items: { id: PageId; label: string; icon: (p: { size?: number }) => JSX.Element }[] }[] = [
+    {
+        group: '监控',
+        items: [
+            { id: 'overview', label: '概览', icon: IconDashboard },
+            { id: 'logs', label: '命中日志', icon: IconTerminal },
+        ],
+    },
+    {
+        group: '回复',
+        items: [
+            { id: 'reply', label: '回复规则', icon: IconSettings },
+            { id: 'private', label: '私聊', icon: IconLock },
+            { id: 'groups', label: '群规则', icon: IconGroup },
+        ],
+    },
+    {
+        group: '管理',
+        items: [
+            { id: 'guard', label: '内容守卫', icon: IconShield },
+            { id: 'safety', label: '安全与风控', icon: IconAlert },
+        ],
+    },
+    {
+        group: '系统',
+        items: [{ id: 'service', label: '服务与运维', icon: IconActivity }],
+    },
 ]
 
 const NAV_COLLAPSED_KEY = 'autoreply-nav-collapsed'
 
 function Shell() {
-    const [currentPage, setCurrentPage] = useState<PageId>('basic')
+    const { page, go } = useHashRoute('overview')
     const [isScrolled, setIsScrolled] = useState(false)
     const [navCollapsed, setNavCollapsed] = useState(() => {
         try { return localStorage.getItem(NAV_COLLAPSED_KEY) === '1' } catch { return false }
     })
-    const { selectedUin, isCurrent, accounts, status } = useAccount()
+    const { status } = useAccount()
 
     useTheme()
 
     useEffect(() => {
-        try { localStorage.setItem(NAV_COLLAPSED_KEY, navCollapsed ? '1' : '0') } catch { /* 忽略 */ }
+        const onScroll = () => setIsScrolled(window.scrollY > 8)
+        const scroller = document.getElementById('page-scroll')
+        scroller?.addEventListener('scroll', onScroll, { passive: true })
+        return () => scroller?.removeEventListener('scroll', onScroll)
+    }, [])
+
+    useEffect(() => {
+        try { localStorage.setItem(NAV_COLLAPSED_KEY, navCollapsed ? '1' : '0') } catch { /* 忽略隐私模式 */ }
     }, [navCollapsed])
 
-    const handleScroll = (e: React.UIEvent<HTMLElement>) => {
-        setIsScrolled(e.currentTarget.scrollTop > 10)
-    }
-
-    const renderPage = () => {
-        switch (currentPage) {
-            case 'basic': return <BasicPage />
-            case 'groups': return <GroupRulesPage />
-            case 'guard': return <GuardPage />
-            case 'service': return <ServicePage />
-            case 'logs': return <LogsPage />
-            default: return <BasicPage />
-        }
-    }
-
-    // 非当前实例编辑态：顶部提示条（契约 §3.3）
-    const editingName = accounts.find((a) => a.uin === selectedUin)?.name || selectedUin
-    const configSource = status?.configSource === 'server' ? 'server' : 'local'
+    const meta = META[page]
+    const Body = {
+        overview: OverviewPage,
+        reply: ReplyPage,
+        private: PrivatePage,
+        groups: GroupsPage,
+        guard: GuardPage,
+        safety: SafetyPage,
+        service: ServicePage,
+        logs: LogsPage,
+    }[page]
 
     return (
-        <div className="flex h-screen overflow-hidden bg-[#f8f9fa] dark:bg-[#18191C] text-gray-800 dark:text-gray-200 transition-colors duration-300">
-            <ToastContainer />
-
-            {/* 左侧固定导航：≥1024px；可折叠到图标 */}
+        <div className="flex h-screen overflow-hidden">
+            {/* 桌面左栏 */}
             <aside
-                className={`hidden lg:flex flex-col shrink-0 border-r border-gray-200 dark:border-gray-800 bg-white dark:bg-[#1e1e20] transition-[width] duration-200 ${
-                    navCollapsed ? 'w-14' : 'w-52'
-                }`}
+                className={`hidden md:flex flex-col shrink-0 border-r border-gray-200 dark:border-gray-800 bg-white dark:bg-[#1a1a1c] transition-[width] duration-300 ${navCollapsed ? 'w-[68px]' : 'w-56'}`}
             >
-                <div className={`flex items-center gap-2 px-3 py-4 ${navCollapsed ? 'justify-center' : ''}`}>
-                    <div className="w-7 h-7 rounded-lg bg-brand-500 text-white flex items-center justify-center text-xs font-bold shrink-0">回</div>
-                    {!navCollapsed && <span className="text-sm font-semibold text-gray-800 dark:text-gray-100 truncate">QQ 自动回复</span>}
-                </div>
-                <nav className="flex-1 flex flex-col gap-1 px-2 py-2">
-                    {tabs.map((tab) => {
-                        const active = currentPage === tab.id
-                        return (
-                            <button
-                                key={tab.id}
-                                onClick={() => setCurrentPage(tab.id)}
-                                title={tab.label}
-                                className={`flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm font-medium transition-colors ${
-                                    active
-                                        ? 'bg-brand-500 text-white'
-                                        : 'text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-white/5'
-                                } ${navCollapsed ? 'justify-center' : ''}`}
-                            >
-                                {tab.icon({ size: 18 })}
-                                {!navCollapsed && <span className="truncate">{tab.label}</span>}
-                            </button>
-                        )
-                    })}
+                <button
+                    className="flex items-center gap-2 px-4 h-16 shrink-0 text-left"
+                    onClick={() => setNavCollapsed((v) => !v)}
+                    title={navCollapsed ? '展开导航' : '收起导航'}
+                >
+                    <div className="w-8 h-8 rounded-lg bg-primary text-white flex items-center justify-center font-bold text-sm shrink-0">Q</div>
+                    {!navCollapsed && (
+                        <div className="min-w-0">
+                            <div className="text-sm font-semibold text-gray-900 dark:text-gray-100 truncate">QQ 自动回复</div>
+                            <div className="text-[11px] text-gray-400 truncate">群管理 · 自动回复</div>
+                        </div>
+                    )}
+                </button>
+
+                <nav className="flex-1 overflow-y-auto px-2 pb-3">
+                    {NAV.map((g) => (
+                        <div key={g.group} className="mt-2">
+                            {!navCollapsed && <div className="px-3 py-1 text-[11px] font-medium text-gray-400 tracking-wide">{g.group}</div>}
+                            {g.items.map((it) => {
+                                const active = page === it.id
+                                return (
+                                    <button
+                                        key={it.id}
+                                        onClick={() => go(it.id)}
+                                        title={it.label}
+                                        aria-current={active ? 'page' : undefined}
+                                        className={`sidebar-item w-full ${active ? 'active' : ''} ${navCollapsed ? 'justify-center' : ''}`}
+                                    >
+                                        <span className="sidebar-icon shrink-0">{it.icon({ size: 18 })}</span>
+                                        {!navCollapsed && <span className="truncate">{it.label}</span>}
+                                    </button>
+                                )
+                            })}
+                        </div>
+                    ))}
                 </nav>
-                <div className="px-2 pb-3">
-                    <button
-                        onClick={() => setNavCollapsed((v) => !v)}
-                        title={navCollapsed ? '展开导航' : '折叠导航'}
-                        className="w-full flex items-center justify-center rounded-lg px-2 py-2 text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-white/5 transition-colors"
-                    >
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
-                            className={`transition-transform ${navCollapsed ? 'rotate-180' : ''}`}>
-                            <polyline points="15 18 9 12 15 6" />
-                        </svg>
-                    </button>
+
+                <div className={`px-3 py-2 text-[10px] text-gray-400 ${navCollapsed ? 'text-center' : ''}`} title="构建戳：与服务端 /api/status 的 build 一致">
+                    {navCollapsed ? '·' : `构建 ${status?.build ?? '-'}`}
                 </div>
             </aside>
 
-            <main className="flex-1 overflow-y-auto min-w-0" onScroll={handleScroll}>
-                <Header
-                    title={pageConfig[currentPage].title}
-                    description={pageConfig[currentPage].desc}
-                    isScrolled={isScrolled}
-                />
+            {/* 右栏 */}
+            <div className="flex-1 flex flex-col min-w-0">
+                <Header title={meta.title} description={meta.desc} isScrolled={isScrolled} />
 
-                {/* 窄屏（<1024px）顶部标签栏，不许横向滚动 */}
-                <div className="lg:hidden px-4">
-                    <nav className="flex gap-1 overflow-x-auto border-b border-gray-200 dark:border-gray-800 pb-0">
-                        {tabs.map((tab) => (
-                            <button
-                                key={tab.id}
-                                onClick={() => setCurrentPage(tab.id)}
-                                className={`whitespace-nowrap px-4 py-2.5 text-sm font-medium rounded-t-lg transition-colors ${
-                                    currentPage === tab.id
-                                        ? 'text-white bg-brand-500'
-                                        : 'text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-white/5'
-                                }`}
-                            >
-                                {tab.label}
-                            </button>
-                        ))}
-                    </nav>
-                </div>
+                {/* 移动端顶部横排导航 */}
+                <nav className="md:hidden flex gap-1 overflow-x-auto border-b border-gray-200 dark:border-gray-800 px-3 bg-white dark:bg-[#1a1a1c]">
+                    {NAV.flatMap((g) => g.items).map((it) => (
+                        <button
+                            key={it.id}
+                            onClick={() => go(it.id)}
+                            className={`px-3 py-2.5 text-xs font-medium whitespace-nowrap border-b-2 -mb-px transition-colors ${
+                                page === it.id
+                                    ? 'border-primary text-primary'
+                                    : 'border-transparent text-gray-500 dark:text-gray-400'
+                            }`}
+                        >
+                            {it.label}
+                        </button>
+                    ))}
+                </nav>
 
-                <div className="mx-auto max-w-[1280px] w-full px-4 md:px-10 pt-5 pb-8">
-                    {!isCurrent && selectedUin && (
-                        <div className="mb-4 flex items-center gap-2 rounded-lg border border-amber-300 bg-amber-50 px-4 py-2.5 text-sm text-amber-800 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-300">
-                            <IconAlert size={16} />
-                            <span>
-                                正在编辑 {selectedUin}（{editingName}）的配置，该号下次同步后生效
-                                {configSource === 'local' && '（注意：本实例配置尚未与服务端同步）'}
-                            </span>
-                        </div>
-                    )}
-                    {currentPage !== 'private' && (
-                        <div key={currentPage} className="page-enter">
-                            {renderPage()}
-                        </div>
-                    )}
-                    {/* 常驻挂载：切到其它页签再切回来，未保存的输入不丢 */}
-                    <div className={currentPage === 'private' ? 'page-enter' : 'hidden'}>
-                        <PrivateKeywordsPage />
+                <main id="page-scroll" className="flex-1 overflow-y-auto px-4 py-4 md:px-10 md:py-6">
+                    <div className="max-w-5xl mx-auto">
+                        <Body />
                     </div>
-                </div>
-            </main>
+                </main>
+            </div>
+            <ToastContainer />
         </div>
     )
 }
 
-function App() {
+export default function App() {
     return (
         <AccountProvider>
             <Shell />
         </AccountProvider>
     )
 }
-
-export default App

@@ -621,3 +621,33 @@ export async function reportTrafficStats(
     );
     return isObject(data);
 }
+
+/** 服务端某一天的流量聚合（GET /stats/traffic?day=YYYY-MM-DD 的 data） */
+export interface DailyTrafficDay {
+    day: string
+    throughput?: Record<string, unknown>
+    rules?: { hits?: number; top?: unknown[] }
+    groups?: unknown[]
+    hourly?: { hour?: number; in?: number; replies?: number }[]
+}
+
+/**
+ * 读服务端某天流量聚合；服务不可用/未配置时返回 null（页面按空数据渲染）。
+ * 只读，不加缓存：调用方（看板）自己控制频率。
+ */
+export async function fetchTrafficDay(
+    cfg: KbServiceConfig,
+    day: string,
+    fetchImpl: FetchLike = fetch,
+): Promise<DailyTrafficDay | null> {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return null;
+    const data = await requestJson(
+        cfg,
+        '/stats/traffic?day=' + encodeURIComponent(day),
+        { method: 'GET', headers: { 'x-bot-token': String(cfg.token || '') } },
+        fetchImpl,
+    );
+    if (!isObject(data)) return null;
+    const inner = isObject(data.data) ? data.data : data;
+    return isObject(inner) ? (inner as unknown as DailyTrafficDay) : null;
+}

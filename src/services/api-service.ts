@@ -35,7 +35,8 @@ import { startGroupConfigSync, buildEffectiveGroupPolicies, getGroupConfigStatus
 import { getBotConfigStatus } from '../core/server-config';
 import { hitLog } from '../core/hit-log';
 import { resetKeywordStats, snapshotKeywordStats } from '../core/keyword-stats';
-import { fetchBotConfig, listServerBots, putBotConfig, type ServerBotSummary } from './kb-client';
+import { fetchBotConfig, fetchTrafficDay, listServerBots, putBotConfig, type ServerBotSummary } from './kb-client';
+import { MAX_SNAPSHOTS, createSnapshot, deleteSnapshot, listSnapshots, readSnapshot } from '../core/config-snapshots';
 import { putServerGroup, putServerGuardPolicy, type GroupPatch } from './admin-client';
 import { resolveImageSource, sendRelayMessage } from '../handlers/message-handler';
 import type { GuardPenaltyPolicy, PluginConfig, ServerGroupConfig } from '../types';
@@ -122,6 +123,17 @@ function resolveAccountAccessKey(): string {
     if (fromConfig) return fromConfig;
     return String(process.env.QQBOT_ACCOUNT_ACCESS_KEY ?? '').trim();
 }
+/**
+ * 回环 allowlist：主机固定 127.0.0.1、端口必须是整数 1-65535、路径必须以 /plugin/ 开头。
+ * 端口来自请求 Host 头，不能直接拼进 URL（否则 ?port=evil 之类的外部输入就进了 fetch）。
+ */
+function loopbackPluginUrl(port: number, pathname: string, key: string): string | null {
+    if (!Number.isInteger(port) || port < 1 || port > 65535) return null;
+    if (!pathname.startsWith('/plugin/')) return null;
+    const url = new URL(pathname, 'http://127.0.0.1:' + String(port));
+    if (key) url.searchParams.set('key', key);
+    return url.href;
+}
 
 /**
  * 转发同进程账号管理插件的 /plugin/napcat-plugin-account/api/instances。
@@ -130,16 +142,14 @@ function resolveAccountAccessKey(): string {
  */
 async function fetchPeers(ctx: NapCatPluginContext, req: PluginHttpRequest): Promise<PeerInfo[]> {
     const port = resolveWebuiPort(ctx, req);
-    // 端口来自 Host 头：只放行合法整数端口，避免把外部输入拼进 fetch 的 URL
-    if (!port || !Number.isInteger(port) || port < 1 || port > 65535) return [];
+    if (!port || !Number.isInteger(port)) return [];
     const now = Date.now();
     const cached = peersCache.get(port);
     if (cached && now - cached.at < PEERS_CACHE_MS) return cached.peers;
     const peers: PeerInfo[] = [];
     try {
-        const accessKey = resolveAccountAccessKey();
-        const target = 'http://127.0.0.1:' + port + '/plugin/napcat-plugin-account/api/instances'
-            + (accessKey ? '?key=' + encodeURIComponent(accessKey) : '');
+        const target = loopbackPluginUrl(port, '/plugin/napcat-plugin-account/api/instances', resolveAccountAccessKey());
+        if (!target) return [];
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), PEERS_TIMEOUT_MS);
         try {
@@ -369,6 +379,64 @@ export function registerApiRoutes(ctx: NapCatPluginContext): void {
         if (!fromSameOrigin(req)) return res.status(403).json({ code: -1, message: '跨站写入被拒绝' });
         resetKeywordStats();
         res.json({ code: 0, message: 'ok' });
+    });
+
+    // ==================== 看板：近 N 天流量（读服务端聚合）====================
+
+    /**
+     * GET /traffic?days=7
+     * 服务端按 UTC 天聚合（/stats/traffic?day=），这里并发取 N 天拼成一条响应。
+     * 服务未配置或不可用时不报错：对应天的 row 为 null，页面按空数据画。
+     */
+    router.getNoAuth('/traffic', async (req, res) => {
+        const raw = Array.isArray(req.query?.days) ? req.query.days[0] : req.query?.days;
+        const days = Math.max(1, Math.min(14, Number(raw) || 7));
+        const cfg = pluginState.config.kbService;
+        const jobs: Promise<{ day: string; row: unknown }>[] = [];
+        for (let i = days - 1; i >= 0; i--) {
+            const day = new Date(Date.now() - i * 86400000).toISOString().slice(0, 10);
+            jobs.push(fetchTrafficDay(cfg, day).then((row) => ({ day, row })));
+        }
+        const items = await Promise.all(jobs);
+        res.json({
+            code: 0,
+            data: { days, configured: !!(cfg?.baseUrl && cfg?.token), items },
+        });
+    });
+
+    // ==================== 配置快照（本地文件，改坏了一键回滚）====================
+
+    router.getNoAuth('/snapshots', (_req, res) => {
+        res.json({ code: 0, data: { items: listSnapshots(ctx.configPath), max: MAX_SNAPSHOTS } });
+    });
+
+    router.postNoAuth('/snapshots', (req, res) => {
+        if (!fromSameOrigin(req)) return res.status(403).json({ code: -1, message: '跨站写入被拒绝' });
+        const body = (req.body ?? {}) as { action?: unknown; id?: unknown; note?: unknown };
+        const action = typeof body.action === 'string' ? body.action : '';
+        const id = typeof body.id === 'string' ? body.id : '';
+        try {
+            if (action === 'create') {
+                const note = typeof body.note === 'string' ? body.note : '';
+                const meta = createSnapshot(ctx.configPath, pluginState.config, note);
+                return res.json({ code: 0, data: meta });
+            }
+            if (action === 'restore') {
+                const snap = readSnapshot(ctx.configPath, id);
+                if (!snap) return res.status(404).json({ code: -1, message: '快照不存在' });
+                pluginState.updateConfig(snap.config);
+                startGuardWordsSync();
+                startGroupConfigSync();
+                return res.json({ code: 0, data: { id: snap.id, ts: snap.ts } });
+            }
+            if (action === 'delete') {
+                return res.json({ code: deleteSnapshot(ctx.configPath, id) ? 0 : -1, message: deleteSnapshot(ctx.configPath, id) ? 'ok' : '快照不存在' });
+            }
+            return res.status(400).json({ code: -1, message: 'action 必须是 create/restore/delete' });
+        } catch (err) {
+            ctx.logger.error('快照操作失败:', err);
+            return res.status(500).json({ code: -1, message: err instanceof Error ? err.message : String(err) });
+        }
     });
 
     // ==================== 反向下发（服务侧 Telegram 回流）====================

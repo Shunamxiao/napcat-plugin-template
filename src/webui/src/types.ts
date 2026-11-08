@@ -129,6 +129,26 @@ export interface PluginConfigView {
     keywordsText?: string
     blacklist?: (number | string)[]
     blacklistText?: string
+    /** 转人工追问 */
+    collect?: { enabled: boolean; questions: string[] }
+    /** 反向下发令牌（Telegram 回流） */
+    relay?: { token?: string }
+    /** 发送失败熔断 */
+    sendGuard?: { failThreshold: number; privateFailThreshold: number; cooldownSeconds: number }
+    /** 群内回复对刷熔断 */
+    loopGuard?: { maxReplies: number; windowSeconds: number; pauseSeconds: number }
+    /** 忽略的发送者（两个机器人同群时填对方） */
+    ignoreSenders?: string[]
+    ignoreSendersText?: string
+    /** 多账号同群去重 */
+    crossAccountDedup?: boolean
+    /** 账号插件 /instances 凭据（出口已打码） */
+    accountAccessKey?: string
+    /** 服务端群配置刷新间隔（毫秒） */
+    groupConfigRefreshMs?: number
+    /** 好友申请自动通过 */
+    friendRequest?: { autoAccept: boolean }
+    groupRules?: Record<string, Record<string, unknown>>
     [key: string]: unknown
 }
 
@@ -222,4 +242,57 @@ export interface ApiResponse<T = unknown> {
     code: number
     data?: T
     message?: string
+}
+
+/* ========== 看板：服务端按天聚合的流量 ========== */
+
+export interface TrafficThroughput {
+    in: number
+    privateIn: number
+    groupIn: number
+    replies: number
+    ruleHits: number
+    aiReplies: number
+    fallbackReplies: number
+}
+
+export interface TrafficGroupRow {
+    groupId: string
+    name: string | null
+    in: number
+    replies: number
+    ruleHits: number
+    aiReplies: number
+    fallbackReplies: number
+    users: number
+}
+
+export interface TrafficDay {
+    day: string
+    throughput?: TrafficThroughput
+    rules?: { hits?: number; top?: { match: string; count: number }[] }
+    groups?: TrafficGroupRow[]
+    hourly?: { hour: string; in: number }[]
+}
+
+export interface TrafficResponse {
+    days: number
+    /** 服务端是否配好（未配置时不发请求，items 全是 null row） */
+    configured: boolean
+    items: { day: string; row: TrafficDay | null }[]
+}
+
+/** 关键词命中统计（本实例内存计数） */
+export interface KeywordStatView {
+    count: number
+    lastAt?: string
+}
+export type KeywordStatsMap = Record<string, KeywordStatView>
+
+/** 配置快照 */
+export interface SnapshotMeta {
+    id: string
+    ts: string
+    size: number
+    note: string
 }
