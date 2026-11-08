@@ -23,7 +23,12 @@ export default function OverviewPage() {
         ])
         if (t.status === 'fulfilled' && t.value.data) setTraffic(t.value.data)
         if (k.status === 'fulfilled' && k.value.data) setKeywordStats(k.value.data)
-        if (l.status === 'fulfilled' && l.value.data) setLogs(l.value.data.entries ?? [])
+        // 兼容两种形状：正常是 {entries,total}；万一上游回数组，entries 会是 Array.prototype.entries
+        // （函数），setState 会把它当 updater 调用，整页直接空白
+        if (l.status === 'fulfilled' && l.value.data) {
+            const data = l.value.data
+            setLogs(Array.isArray(data) ? data : data.entries ?? [])
+        }
         if (o.status === 'fulfilled' && o.value.data) setObs(o.value.data)
         setLoading(false)
     }, [])
