@@ -53,14 +53,17 @@ function isObject(v: unknown): v is Record<string, unknown> {
     return v !== null && typeof v === 'object' && !Array.isArray(v);
 }
 
-/** 写接口同源闸门：无 Origin（脚本 / curl）放行，有 Origin 时必须与请求 Host 一致。 */
+/**
+ * 写接口同源闸门：无 Origin（脚本 / curl）放行，浏览器请求必须带自定义头 x-napcat-webui。
+ *
+ * 为什么不只比 Origin 与 Host：DNS rebinding 时两者都是攻击者域名，比了也白比；
+ * 而自定义头会让浏览器先发预检，本服务不答 CORS 预检，攻击页的请求根本到不了这里。
+ */
 function fromSameOrigin(req: PluginHttpRequest): boolean {
-    const { origin, host, 'sec-fetch-site': fetchSite } = req.headers ?? {};
-    // 浏览器发起的跨站请求一律拒绝：DNS rebinding 时 Origin 与 Host 可以同时是攻击者域名，
-    // 只有 Sec-Fetch-Site 会如实标成 cross-site
-    if (fetchSite === 'cross-site' || fetchSite === 'same-site') return false;
-    // 无 Origin（脚本 / curl）放行：本机运维脚本没有 Origin 头
+    const { origin, host } = req.headers ?? {};
     if (typeof origin !== 'string' || origin === '') return true;
+    const marker = req.headers?.['x-napcat-webui'];
+    if ((Array.isArray(marker) ? marker[0] : marker) !== '1') return false;
     try {
         return new URL(origin).host === (Array.isArray(host) ? host[0] : host);
     } catch {

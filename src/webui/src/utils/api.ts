@@ -29,7 +29,8 @@ function buildUrl(base: string, path: string): string {
 export async function noAuthFetch<T = unknown>(path: string, options: RequestInit = {}): Promise<ApiResponse<T>> {
     const res = await fetch(buildUrl(API_BASE, path), {
         ...options,
-        headers: { 'Content-Type': 'application/json', ...options.headers }
+        // x-napcat-webui 是写接口的浏览器侧凭证：自定义头会触发预检，DNS rebinding 打不进来
+        headers: { 'Content-Type': 'application/json', 'x-napcat-webui': '1', ...options.headers }
     })
     if (!res.ok) {
         const text = await res.text()
