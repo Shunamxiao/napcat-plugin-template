@@ -3,13 +3,8 @@ import { noAuthFetch } from '../utils/api'
 import { showToast } from '../hooks/useToast'
 import { Btn, Card, Empty, Loading, Tag } from '../ui/kit'
 import type { HitLogEntry } from '../types'
+import { RESULT_META } from '../utils/results'
 
-const RESULT_META: Record<string, { text: string; tone: 'success' | 'warning' | 'danger' | 'muted' }> = {
-    answered: { text: '已回复', tone: 'success' },
-    silent: { text: '未回复', tone: 'muted' },
-    guard_mute: { text: '禁言', tone: 'danger' },
-    service_down: { text: '服务降级', tone: 'warning' },
-}
 
 function formatTime(iso: string): string {
     const date = new Date(iso)
@@ -26,7 +21,11 @@ function toCsv(rows: HitLogEntry[]): string {
         RESULT_META[e.result]?.text ?? e.result,
         e.detail ?? '',
     ])
-    const esc = (v: string) => (/[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v)
+    // 以 = + - @ 开头的单元格会被 Excel/WPS 当公式执行（detail 里带用户原文），前置单引号中和
+    const esc = (v: string) => {
+        const safe = /^[=+\-@\t]/.test(v) ? "'" + v : v
+        return /[",\n]/.test(safe) ? '"' + safe.replace(/"/g, '""') + '"' : safe
+    }
     return [head, ...body].map((r) => r.map((c) => esc(String(c))).join(',')).join('\n')
 }
 

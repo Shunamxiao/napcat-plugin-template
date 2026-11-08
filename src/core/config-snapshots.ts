@@ -62,7 +62,15 @@ export function listSnapshots(configPath: string): SnapshotMeta[] {
             // 损坏的快照跳过，不影响其它条目
         }
     }
-    return out.sort((a, b) => b.id.localeCompare(a.id));
+    // 按时间排，同秒（id 只精确到秒，后缀有 snap-…-1/-2 这类）用文件 mtime 兜底：
+    // prune 删的是「列表尾部 = 最旧」，排错会先把刚建的快照删掉
+    const mtime = new Map<string, number>();
+    for (const name of names) {
+        try {
+            mtime.set(name.slice(0, -5), fs.statSync(path.join(dir, name)).mtimeMs);
+        } catch { /* 统计不到就按 0 排 */ }
+    }
+    return out.sort((a, b) => (b.ts.localeCompare(a.ts)) || ((mtime.get(b.id) ?? 0) - (mtime.get(a.id) ?? 0)));
 }
 
 /** 建快照；返回新条目，写盘失败抛错（调用方转 500） */

@@ -1,6 +1,7 @@
 import { useConfigDraft } from '../hooks/useConfig'
 import { showToast } from '../hooks/useToast'
 import { Card, Empty, Loading, Row, SaveBar, Switch } from '../ui/kit'
+import { parseIdLines } from '../utils/ids'
 
 /** 安全：黑名单、忽略发送者、跨账号去重、好友申请、发送/对刷熔断、转人工追问 */
 export default function SafetyPage() {
@@ -23,7 +24,7 @@ export default function SafetyPage() {
     const setCollect = (patch: Partial<typeof collect>) => update((d) => ({ ...d, collect: { ...collect, ...patch } }))
 
     const persist = async () => {
-        const lines = (text: string) => text.split('\n').map((s) => s.trim()).filter((s) => s && !s.startsWith('#'))
+        const lines = (text: string) => parseIdLines(text)
         const result = await save({
             blacklist: lines(blacklistText),
             blacklistText,

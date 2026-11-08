@@ -10,7 +10,7 @@ import type { PluginConfigView } from '../types'
 import { useAccount } from './useAccount'
 
 export function useConfigDraft() {
-    const { selectedUin, isCurrent, configRevision } = useAccount()
+    const { selectedUin, isCurrent } = useAccount()
     const [config, setConfig] = useState<PluginConfigView | null>(null)   // 服务端基线
     const [draft, setDraft] = useState<PluginConfigView | null>(null)     // 正在编辑
     const [revision, setRevision] = useState<number | null>(null)
@@ -51,7 +51,9 @@ export function useConfigDraft() {
         if (!selectedUin) return { ok: false, message: '未选择账号' }
         setSaving(true)
         try {
-            const result = await saveBotConfig(patch, selectedUin, isCurrent ? configRevision : revision)
+            // 当前实例：本地 configRevision 要等 groupConfigRefreshMs 同步才更新，带上就会在
+            // 连续保存时误报 409；其他实例仍按服务端 revision 做并发保护
+            const result = await saveBotConfig(patch, selectedUin, isCurrent ? null : revision)
             if (!result.ok) return { ok: false, message: result.message }
             await load()
             return { ok: true, message: isCurrent ? '已保存并立即生效' : '已保存到服务端，该号下次同步后生效' }
@@ -60,7 +62,7 @@ export function useConfigDraft() {
         } finally {
             setSaving(false)
         }
-    }, [selectedUin, isCurrent, configRevision, revision, load])
+    }, [selectedUin, isCurrent, revision, load])
 
     return { config, draft, update, dirty, save, saving, loading, error, reload: load }
 }

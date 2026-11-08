@@ -3,6 +3,7 @@ import { noAuthFetch } from '../utils/api'
 import { useAccount } from '../hooks/useAccount'
 import { Bars, Card, Empty, Loading, Row, Stat, Tag } from '../ui/kit'
 import type { HitLogEntry, KeywordStatsMap, Observability, TrafficResponse } from '../types'
+import { resultMeta } from '../utils/results'
 
 /** 概览：实例状态、今日计数、近七天流量、Top 关键词与最近命中 */
 export default function OverviewPage() {
@@ -126,7 +127,7 @@ export default function OverviewPage() {
                             {recent.map((e, i) => (
                                 <div key={(e.ts ?? '') + i} className="text-xs">
                                     <div className="flex items-center gap-2">
-                                        <Tag tone={resultTone(e.result)}>{resultLabel(e.result)}</Tag>
+                                        <Tag tone={resultMeta(e.result).tone}>{resultMeta(e.result).text}</Tag>
                                         <span className="text-gray-400 tabular-nums">{(e.ts || '').slice(11, 19)}</span>
                                         <span className="text-gray-500 dark:text-gray-400 truncate">
                                             {e.channel === 'group' ? `群 ${e.groupId ?? ''}` : '私聊'} · {e.userId}
@@ -143,13 +144,4 @@ export default function OverviewPage() {
     )
 }
 
-function resultTone(result: string): 'primary' | 'success' | 'warning' | 'default' {
-    if (result === 'ai') return 'success'
-    if (result === 'fallback') return 'warning'
-    if (result === 'rule') return 'primary'
-    return 'default'
-}
 
-function resultLabel(result: string): string {
-    return { rule: '关键词', ai: 'AI', fallback: '兜底', none: '未回复' }[result] ?? result
-}

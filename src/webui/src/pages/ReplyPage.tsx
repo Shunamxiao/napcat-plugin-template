@@ -46,11 +46,18 @@ export default function ReplyPage() {
 
     const setKeywords = (next: KeywordRuleView[]) => update((d) => ({ ...d, keywords: next }))
 
+    // 新增规则一律算改动；编辑时与列表里的原值比较
+    const drawerDirty = !!editing && (editing.index < 0 || JSON.stringify(editing) !== JSON.stringify(keywords[editing.index]))
+
     const commitRule = (rule: EditRule) => {
         if (!editing) return
         if (!rule.match.trim()) { showToast('匹配文本不能为空', 'error'); return }
         if (rule.matchType === 'regex') {
             try { new RegExp(rule.match) } catch { showToast('正则写错了，保存前先改好', 'error'); return }
+        }
+        if (rule.action !== 'ai' && !rule.reply.trim() && (rule.replies ?? []).length === 0) {
+            showToast('这条规则没有回复内容，保存时会被丢弃：填一条回复或改成「问 AI」', 'error')
+            return
         }
         const next = [...keywords]
         if (editing.index < 0) next.push(rule)
@@ -76,6 +83,7 @@ export default function ReplyPage() {
     const persist = async () => {
         const result = await save({
             enabled: draft.enabled,
+            atReply: draft.atReply,
             cooldownSeconds: draft.cooldownSeconds,
             replyDelayMinMs: draft.replyDelayMinMs,
             replyDelayMaxMs: draft.replyDelayMaxMs,
@@ -100,6 +108,9 @@ export default function ReplyPage() {
                         value={draft.cooldownSeconds ?? 0}
                         onChange={(e) => update((d) => ({ ...d, cooldownSeconds: Number(e.target.value) || 0 }))}
                     />
+                </Row>
+                <Row label="回复前 @ 触发者" desc="群里回复时带上 @，更容易被对方看到">
+                    <Switch checked={draft.atReply === true} onChange={(v) => update((d) => ({ ...d, atReply: v }))} />
                 </Row>
                 <Row label="随机延迟（毫秒）" desc="回复前在区间内随机等待">
                     <div className="flex items-center gap-2">
@@ -221,6 +232,7 @@ export default function ReplyPage() {
                 open={!!editing}
                 title={editing && editing.index < 0 ? '新增关键词规则' : '编辑关键词规则'}
                 desc="正则写错会提示；回复池非空时优先随机发池内一条"
+                dirty={drawerDirty}
                 onClose={() => setEditing(null)}
                 footer={
                     <>

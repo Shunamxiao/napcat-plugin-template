@@ -1,6 +1,7 @@
 import { useConfigDraft } from '../hooks/useConfig'
 import { showToast } from '../hooks/useToast'
 import { Card, Empty, Loading, Row, SaveBar, Switch } from '../ui/kit'
+import { idListToText, parseIdLines } from '../utils/ids'
 
 /** 私聊：开关、白名单、连发合并、首条引导、是否升级 AI */
 export default function PrivatePage() {
@@ -19,7 +20,9 @@ export default function PrivatePage() {
         const result = await save({
             private: {
                 ...priv,
-                whitelist: (priv.whitelistText ?? '').split('\n').map((s) => s.trim()).filter(Boolean),
+                // 与后端 textToIdList 同规则解析（井号注释不进口名单），
+                // 且配置里只有数组没有派生文本时以数组为准，别把白名单写空成「对所有人生效」
+                whitelist: parseIdLines(priv.whitelistText ?? idListToText(priv.whitelist)),
             },
             aiTrigger: draft.aiTrigger,
         })

@@ -4,7 +4,7 @@
  * 只做「重复出现过 3 次以上」的东西：卡片、字段行、开关、分段选择、按钮、空态、统计块、
  * 抽屉、标签、柱状图。没有业务逻辑，业务状态由各自页面持有。
  */
-import { useEffect, type ReactNode } from 'react'
+import { useCallback, useEffect, type ReactNode } from 'react'
 
 /* ==================== 卡片 ==================== */
 
@@ -207,25 +207,32 @@ export function Tag({ children, tone = 'default' }: {
 
 /* ==================== 抽屉 ==================== */
 
-export function Drawer({ open, title, desc, onClose, footer, children }: {
+export function Drawer({ open, title, desc, onClose, footer, dirty = false, children }: {
     open: boolean
     title: ReactNode
     desc?: ReactNode
     onClose: () => void
     footer?: ReactNode
+    dirty?: boolean
     children: ReactNode
 }) {
+    // 有未保存改动时，Esc / 点遮罩 / 点 × 都要先确认，别让编辑静默丢失
+    const requestClose = useCallback(() => {
+        if (dirty && !window.confirm('有未保存的修改，确定关闭？')) return
+        onClose()
+    }, [dirty, onClose])
+
     useEffect(() => {
         if (!open) return
-        const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+        const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') requestClose() }
         document.addEventListener('keydown', onKey)
         return () => document.removeEventListener('keydown', onKey)
-    }, [open, onClose])
+    }, [open, requestClose])
 
     if (!open) return null
     return (
         <div className="fixed inset-0 z-40 flex justify-end">
-            <div className="absolute inset-0 bg-black/30 animate-fade-in" onClick={onClose} />
+            <div className="absolute inset-0 bg-black/30 animate-fade-in" onClick={requestClose} />
             <div
                 role="dialog"
                 aria-modal="true"
@@ -236,7 +243,7 @@ export function Drawer({ open, title, desc, onClose, footer, children }: {
                         <div className="text-sm font-semibold text-gray-900 dark:text-gray-100">{title}</div>
                         {desc && <div className="text-xs text-gray-400 mt-0.5">{desc}</div>}
                     </div>
-                    <button className="btn-plain text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 text-lg leading-none" onClick={onClose} aria-label="关闭">×</button>
+                    <button className="btn-plain text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 text-lg leading-none" onClick={requestClose} aria-label="关闭">×</button>
                 </div>
                 <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4">{children}</div>
                 {footer && <div className="px-5 py-3 border-t border-gray-200 dark:border-gray-800 flex justify-end gap-2">{footer}</div>}

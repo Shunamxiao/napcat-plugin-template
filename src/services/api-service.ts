@@ -55,7 +55,11 @@ function isObject(v: unknown): v is Record<string, unknown> {
 
 /** 写接口同源闸门：无 Origin（脚本 / curl）放行，有 Origin 时必须与请求 Host 一致。 */
 function fromSameOrigin(req: PluginHttpRequest): boolean {
-    const { origin, host } = req.headers ?? {};
+    const { origin, host, 'sec-fetch-site': fetchSite } = req.headers ?? {};
+    // 浏览器发起的跨站请求一律拒绝：DNS rebinding 时 Origin 与 Host 可以同时是攻击者域名，
+    // 只有 Sec-Fetch-Site 会如实标成 cross-site
+    if (fetchSite === 'cross-site' || fetchSite === 'same-site') return false;
+    // 无 Origin（脚本 / curl）放行：本机运维脚本没有 Origin 头
     if (typeof origin !== 'string' || origin === '') return true;
     try {
         return new URL(origin).host === (Array.isArray(host) ? host[0] : host);
@@ -288,7 +292,14 @@ export function registerApiRoutes(ctx: NapCatPluginContext): void {
             return res.status(400).json({ code: -1, message: 'config 必须是对象' });
         }
         const cfg = pluginState.config.kbService;
+        const isSelf = uin === pluginState.selfId;
+        // 本实例的配置只落本地就够了：没配服务端的机器也必须能改配置，
+        // 否则全新安装的 WebUI 所有保存都返回 503
         if (!cfg?.baseUrl || !cfg.token) {
+            if (isSelf) {
+                pluginState.updateConfig(body.config as Partial<PluginConfig>);
+                return res.json({ code: 0, data: { revision: null, local: true } });
+            }
             return res.status(503).json({ code: -1, message: '未配置服务地址或令牌' });
         }
         const expectedRevision = typeof body.expectedRevision === 'number'
@@ -312,7 +323,12 @@ export function registerApiRoutes(ctx: NapCatPluginContext): void {
                     merged.kbService.token = TOKEN_MASK;
                 }
             }
-            const result = await putBotConfig(cfg, uin, merged, expectedRevision);
+            // accountAccessKey 是宿主本地凭据（契约 §2.5：不进 /api 出口、不该进服务端库）：
+            // 上行前换成掩码，远端同步时按「占位符 = 保留本地真值」处理，既不上传也不清空别处
+            const upload: PluginConfig = merged.accountAccessKey
+                ? { ...merged, accountAccessKey: TOKEN_MASK }
+                : merged;
+            const result = await putBotConfig(cfg, uin, upload, expectedRevision);
             if (!result.ok) {
                 if (result.status === 409) {
                     ctx.logger.warn('[配置] 保存冲突 uin=' + uin + ' 服务端 revision=' + (result.revision ?? '?'));
@@ -383,6 +399,10 @@ export function registerApiRoutes(ctx: NapCatPluginContext): void {
 
     // ==================== 看板：近 N 天流量（读服务端聚合）====================
 
+    /** 每页 7 天要发 7 个请求：60 秒内复用，避免多开页面把服务端打满 */
+    const trafficCache = new Map<string, { at: number; row: unknown }>();
+    const TRAFFIC_TTL_MS = 60_000;
+
     /**
      * GET /traffic?days=7
      * 服务端按 UTC 天聚合（/stats/traffic?day=），这里并发取 N 天拼成一条响应。
@@ -392,10 +412,20 @@ export function registerApiRoutes(ctx: NapCatPluginContext): void {
         const raw = Array.isArray(req.query?.days) ? req.query.days[0] : req.query?.days;
         const days = Math.max(1, Math.min(14, Number(raw) || 7));
         const cfg = pluginState.config.kbService;
+        const now = Date.now();
         const jobs: Promise<{ day: string; row: unknown }>[] = [];
         for (let i = days - 1; i >= 0; i--) {
-            const day = new Date(Date.now() - i * 86400000).toISOString().slice(0, 10);
-            jobs.push(fetchTrafficDay(cfg, day).then((row) => ({ day, row })));
+            const day = new Date(now - i * 86400000).toISOString().slice(0, 10);
+            const hit = trafficCache.get(day);
+            if (hit && now - hit.at < TRAFFIC_TTL_MS) {
+                jobs.push(Promise.resolve({ day, row: hit.row }));
+                continue;
+            }
+            jobs.push(fetchTrafficDay(cfg, day).then((row) => {
+                // 未配置服务时不缓存 null，配好之后下一次刷新就能拿到数据
+                if (row) trafficCache.set(day, { at: Date.now(), row });
+                return { day, row };
+            }));
         }
         const items = await Promise.all(jobs);
         res.json({
@@ -424,13 +454,15 @@ export function registerApiRoutes(ctx: NapCatPluginContext): void {
             if (action === 'restore') {
                 const snap = readSnapshot(ctx.configPath, id);
                 if (!snap) return res.status(404).json({ code: -1, message: '快照不存在' });
-                pluginState.updateConfig(snap.config);
+                // 用完整替换而不是补丁合并：快照里为空的关键词/群规则也要按快照回滚
+                pluginState.replaceConfig(sanitizeConfig(snap.config));
                 startGuardWordsSync();
                 startGroupConfigSync();
                 return res.json({ code: 0, data: { id: snap.id, ts: snap.ts } });
             }
             if (action === 'delete') {
-                return res.json({ code: deleteSnapshot(ctx.configPath, id) ? 0 : -1, message: deleteSnapshot(ctx.configPath, id) ? 'ok' : '快照不存在' });
+                const removed = deleteSnapshot(ctx.configPath, id);
+                return res.json(removed ? { code: 0, message: 'ok' } : { code: -1, message: '快照不存在' });
             }
             return res.status(400).json({ code: -1, message: 'action 必须是 create/restore/delete' });
         } catch (err) {

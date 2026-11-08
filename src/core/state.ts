@@ -13,7 +13,7 @@
 import fs from 'fs';
 import path from 'path';
 import type { NapCatPluginContext, PluginLogger } from 'napcat-types/napcat-onebot/network/plugin/types';
-import { DEFAULT_CONFIG, groupRulesToText, textToGroupRules } from '../config';
+import { DEFAULT_CONFIG, groupRulesToText, idListToText, keywordsToText, textToGroupRules } from '../config';
 import type { BlockUser, KeywordRule, PluginConfig, GroupEnableConfig, GroupRule, RuleAction } from '../types';
 import type { CollectSession } from './collect';
 
@@ -178,7 +178,7 @@ function sanitizeGroupRules(raw: Record<string, unknown>): Record<string, GroupR
  */
 export function sanitizeConfig(raw: unknown): PluginConfig {
     // 深拷贝默认值,避免嵌套对象共享引用被运行时修改污染
-    const out: PluginConfig = JSON.parse(JSON.stringify(DEFAULT_CONFIG));
+    const out: PluginConfig = structuredClone(DEFAULT_CONFIG);
 
     if (!isObject(raw)) return out;
 
@@ -453,6 +453,21 @@ export function applyConfigPatch(current: PluginConfig, patch: Partial<PluginCon
     if (patch.accountAccessKey === TOKEN_MASK) {
         merged.accountAccessKey = current.accountAccessKey;
     }
+    // 派生文本随结构化字段一起刷新：页面只提交数组时，磁盘上的旧文本会被原生面板
+    // 下次保存（plugin_set_config 文本优先）解析回来，覆盖掉刚改的数组
+    if (patch.keywords) merged.keywordsText = keywordsToText(merged.keywords);
+    if (patch.blacklist) merged.blacklistText = idListToText(merged.blacklist);
+    if (patch.ignoreSenders) merged.ignoreSendersText = idListToText(merged.ignoreSenders);
+    if (patch.private?.whitelist) merged.private = { ...merged.private, whitelistText: idListToText(merged.private.whitelist) };
+    if (patch.group?.whitelist) merged.group = { ...merged.group, whitelistText: idListToText(merged.group.whitelist) };
+    if (patch.guard) {
+        merged.guard = {
+            ...merged.guard,
+            wordsText: merged.guard.words.join('\n'),
+            groupIdsText: idListToText(merged.guard.groupIds),
+        };
+    }
+    if (patch.groupRules) merged.groupRulesText = groupRulesToText(merged.groupRules);
     return sanitizeConfig(merged);
 }
 

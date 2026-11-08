@@ -28,7 +28,7 @@ const DEFAULT_GROUP: GroupDefaultView = {
 
 /** 群规则：搜索、批量改、抽屉编辑、导入导出、未配置群默认策略 */
 export default function GroupsPage() {
-    const { selectedUin, isCurrent, configRevision } = useAccount()
+    const { selectedUin, isCurrent } = useAccount()
     const [rows, setRows] = useState<GroupRuleEntry[]>([])
     const [global, setGlobal] = useState<GroupsResponse['global'] | null>(null)
     const [defaults, setDefaults] = useState<GroupDefaultView>(DEFAULT_GROUP)
@@ -40,10 +40,15 @@ export default function GroupsPage() {
     const [selected, setSelected] = useState<Set<string>>(new Set())
     const [manualId, setManualId] = useState('')
     const [editing, setEditing] = useState<GroupRuleEntry | null>(null)
+    const [welcomeTouched, setWelcomeTouched] = useState(false)
     const [batch, setBatch] = useState<{ mode: GroupMode | ''; missPolicy: MissPolicy | '' }>({ mode: '', missPolicy: '' })
     const [importOpen, setImportOpen] = useState(false)
     const [importText, setImportText] = useState('')
     const fileRef = useRef<HTMLInputElement>(null)
+
+    // 轮询读带草稿的开关时走 ref：放进依赖数组会让每次切换都重拉整表，冲掉抽屉里的编辑
+    const defaultsDirtyRef = useRef(defaultsDirty)
+    defaultsDirtyRef.current = defaultsDirty
 
     const loadGroups = useCallback(async () => {
         try {
@@ -52,14 +57,14 @@ export default function GroupsPage() {
                 const data = res.data
                 setRows(data.groups ?? [])
                 setGlobal(data.global ?? null)
-                if (!defaultsDirty && data.global?.groupDefault) setDefaults({ ...DEFAULT_GROUP, ...data.global.groupDefault })
+                if (!defaultsDirtyRef.current && data.global?.groupDefault) setDefaults({ ...DEFAULT_GROUP, ...data.global.groupDefault })
             }
         } catch (e) {
             showToast('获取群规则失败：' + (e instanceof Error ? e.message : String(e)), 'error')
         } finally {
             setLoading(false)
         }
-    }, [defaultsDirty])
+    }, [])
 
     useEffect(() => { loadGroups() }, [loadGroups])
 
@@ -69,7 +74,9 @@ export default function GroupsPage() {
         return rows.filter((r) => r.groupId.includes(q) || (r.name || '').toLowerCase().includes(q))
     }, [rows, query])
 
-    const applyRow = async (row: GroupRuleEntry): Promise<boolean> => {
+    // welcomeTouched：只有用户真的动过欢迎开关才提交欢迎字段，
+    // 否则 row.welcomeEnabled 来自全局解析值，提交上去会变成该群的独立覆盖
+    const applyRow = async (row: GroupRuleEntry, welcomeTouched = false): Promise<boolean> => {
         setSavingId(row.groupId)
         try {
             const res = await noAuthFetch<GroupRuleEntry>(`/groups/${encodeURIComponent(row.groupId)}`, {
@@ -81,8 +88,12 @@ export default function GroupsPage() {
                     keywordOutsideAt: row.keywordOutsideAt,
                     cooldownSeconds: row.cooldownSeconds,
                     fallbackText: row.fallbackText?.trim() ? row.fallbackText.trim() : null,
-                    welcomeEnabled: row.welcomeEnabled,
-                    welcomeTemplate: row.welcomeTemplate?.trim() ? row.welcomeTemplate : null,
+                    ...(welcomeTouched || row.source !== 'default'
+                        ? {
+                            welcomeEnabled: row.welcomeEnabled,
+                            welcomeTemplate: row.welcomeTemplate?.trim() ? row.welcomeTemplate : null,
+                        }
+                        : {}),
                 }),
             })
             if (res.code !== 0) throw new Error(res.message || '保存失败')
@@ -108,7 +119,7 @@ export default function GroupsPage() {
                     cooldownSeconds: defaults.cooldownSeconds === null ? null : Number(defaults.cooldownSeconds),
                     fallbackText: defaults.fallbackText?.trim() ? defaults.fallbackText : null,
                 },
-            }, selectedUin, isCurrent ? configRevision : null)
+            }, selectedUin, null)
             if (!result.ok) throw new Error(result.message)
             setDefaultsDirty(false)
             showToast(isCurrent ? '未配置群默认策略已保存' : '已保存到服务端，该号下次同步后生效', 'success')
@@ -177,11 +188,11 @@ export default function GroupsPage() {
                     missPolicy: (raw.missPolicy as MissPolicy) ?? base.missPolicy,
                     atForceReply: raw.atForceReply ?? base.atForceReply,
                     keywordOutsideAt: raw.keywordOutsideAt ?? base.keywordOutsideAt,
-                    cooldownSeconds: raw.cooldownSeconds ?? null,
-                    fallbackText: raw.fallbackText ?? null,
+                    cooldownSeconds: raw.cooldownSeconds ?? base.cooldownSeconds,
+                    fallbackText: raw.fallbackText ?? base.fallbackText,
                     welcomeEnabled: raw.welcomeEnabled ?? base.welcomeEnabled,
-                    welcomeTemplate: raw.welcomeTemplate ?? null,
-                })) ok += 1
+                    welcomeTemplate: raw.welcomeTemplate ?? base.welcomeTemplate,
+                }, raw.welcomeEnabled !== undefined || raw.welcomeTemplate !== undefined)) ok += 1
             }
             showToast(`导入完成：${ok} 个群`, ok > 0 ? 'success' : 'error')
             setImportOpen(false)
@@ -274,14 +285,14 @@ export default function GroupsPage() {
                     <div className="flex flex-wrap items-center gap-2 mb-3 rounded-lg border border-brand-200 dark:border-brand-500/30 bg-brand-50/60 dark:bg-brand-500/5 px-3 py-2">
                         <span className="text-xs text-brand-700 dark:text-brand-300">已选 {selected.size} 个群</span>
                         <Segmented
-                            value={batch.mode || 'off'}
-                            options={MODE_OPTIONS.map((m) => ({ ...m, label: m.label }))}
-                            onChange={(v) => setBatch({ ...batch, mode: v })}
+                            value={batch.mode}
+                            options={[{ value: '', label: '模式不变' }, ...MODE_OPTIONS]}
+                            onChange={(v) => setBatch({ ...batch, mode: v as GroupMode | '' })}
                         />
                         <Segmented
-                            value={batch.missPolicy || 'none'}
-                            options={MISS_OPTIONS}
-                            onChange={(v) => setBatch({ ...batch, missPolicy: v })}
+                            value={batch.missPolicy}
+                            options={[{ value: '', label: '未命中不变' }, ...MISS_OPTIONS]}
+                            onChange={(v) => setBatch({ ...batch, missPolicy: v as MissPolicy | '' })}
                         />
                         <Btn variant="primary" size="sm" onClick={applyBatch}>应用到所选</Btn>
                         <Btn size="sm" onClick={() => { setSelected(new Set()); setBatch({ mode: '', missPolicy: '' }) }}>取消</Btn>
@@ -338,7 +349,7 @@ export default function GroupsPage() {
                                         </td>
                                         <td className="py-2 px-1 text-xs text-gray-400 hidden md:table-cell">{row.source === 'server' ? '服务端' : row.source === 'local' ? '本地' : '默认'}</td>
                                         <td className="py-2 px-1 text-right whitespace-nowrap">
-                                            <Btn size="sm" loading={savingId === row.groupId} onClick={() => setEditing({ ...row })}>编辑</Btn>
+                                            <Btn size="sm" loading={savingId === row.groupId} onClick={() => { setEditing({ ...row }); setWelcomeTouched(false) }}>编辑</Btn>
                                         </td>
                                     </tr>
                                 ))}
@@ -352,6 +363,7 @@ export default function GroupsPage() {
                 open={!!editing}
                 title={editing ? `群 ${editing.groupId}` : ''}
                 desc={editing?.name || '编辑该群的回复策略'}
+                dirty={!!editing && JSON.stringify(editing) !== JSON.stringify(rows.find((r) => r.groupId === editing.groupId) ?? null)}
                 onClose={() => setEditing(null)}
                 footer={
                     <>
@@ -361,7 +373,7 @@ export default function GroupsPage() {
                             loading={savingId === (editing?.groupId ?? '')}
                             onClick={async () => {
                                 if (!editing) return
-                                if (await applyRow(editing)) {
+                                if (await applyRow(editing, welcomeTouched)) {
                                     showToast(`群 ${editing.groupId} 已保存`, 'success')
                                     setEditing(null)
                                 }
@@ -415,7 +427,7 @@ export default function GroupsPage() {
                             />
                         </Row>
                         <Row label="入群欢迎">
-                            <Switch checked={editing.welcomeEnabled} onChange={(v) => setEditing({ ...editing, welcomeEnabled: v })} />
+                            <Switch checked={editing.welcomeEnabled} onChange={(v) => { setWelcomeTouched(true); setEditing({ ...editing, welcomeEnabled: v }) }} />
                         </Row>
                         {editing.welcomeEnabled && (
                             <Row label="欢迎语模板" desc="支持 {nickname} / {group_id}" stack>

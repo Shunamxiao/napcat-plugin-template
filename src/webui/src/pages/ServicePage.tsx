@@ -109,7 +109,7 @@ export default function ServicePage() {
                         onChange={(e) => setKb({ baseUrl: e.target.value })}
                     />
                 </Row>
-                <Row label="访问令牌" desc="已配置显示 ****；留空或不改则保留原值。改地址必须同时填新令牌">
+                <Row label="访问令牌" desc="已配置则显示为掩码；留空或不改即保留原值。改地址必须同时填新令牌">
                     <input
                         className="input-sm w-72 text-left font-mono"
                         type="password"
@@ -130,7 +130,7 @@ export default function ServicePage() {
             </Card>
 
             <Card title="Telegram 回流" desc="服务侧通过 POST /relay 反向下发消息；令牌为空 = 关闭">
-                <Row label="回流令牌" desc="打码值 **** 表示已配置；填空并保存即关闭回流">
+                <Row label="回流令牌" desc="显示掩码表示已配置；清空并保存即关闭回流">
                     <input
                         className="input-sm w-72 text-left font-mono"
                         type="password"
@@ -170,7 +170,14 @@ export default function ServicePage() {
                                 </div>
                                 <div className="flex items-center gap-2 shrink-0">
                                     <Btn size="sm" loading={busyId === 'restore' + s.id} onClick={() => snapshotAction('restore', s.id)}>回滚</Btn>
-                                    <Btn size="sm" variant="danger" loading={busyId === 'delete' + s.id} onClick={() => snapshotAction('delete', s.id)}>删除</Btn>
+                                    <Btn
+                                        size="sm"
+                                        variant="danger"
+                                        loading={busyId === 'delete' + s.id}
+                                        onClick={() => {
+                                            if (window.confirm('删除这个快照？删除后无法找回。')) snapshotAction('delete', s.id)
+                                        }}
+                                    >删除</Btn>
                                 </div>
                             </div>
                         ))}

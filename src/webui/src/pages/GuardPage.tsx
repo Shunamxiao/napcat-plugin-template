@@ -6,11 +6,12 @@ import type { GuardPolicy, PluginConfigView } from '../types'
 
 /** 守卫与处罚：屏蔽词/命中动作（随账号配置）+ 处罚策略（服务端全局） */
 export default function GuardPage() {
-    const { selectedUin, isCurrent, configRevision } = useAccount()
+    const { selectedUin, isCurrent } = useAccount()
     const [config, setConfig] = useState<PluginConfigView | null>(null)
     const [policy, setPolicy] = useState<GuardPolicy | null>(null)
     const [words, setWords] = useState('')
     const [action, setAction] = useState<'recall' | 'warn' | 'both'>('recall')
+    const [guardEnabled, setGuardEnabled] = useState(false)
     const [saving, setSaving] = useState(false)
     /** 编辑基底的服务端 revision（其他实例时用） */
     const [editRevision, setEditRevision] = useState<number | null>(null)
@@ -25,6 +26,7 @@ export default function GuardPage() {
             setEditRevision(view.revision)
             setWords((view.config.guard?.words ?? []).join('\n'))
             setAction(view.config.guard?.action ?? 'recall')
+            setGuardEnabled(view.config.guard?.enabled === true)
             if (policyRes.code === 0 && policyRes.data) setPolicy(policyRes.data)
         } catch {
             showToast('获取守卫配置失败', 'error')
@@ -45,12 +47,13 @@ export default function GuardPage() {
             const wordList = words.split('\n').map((line) => line.trim()).filter(Boolean)
             const result = await saveBotConfig({
                 guard: {
+                    enabled: guardEnabled,
                     words: wordList,
                     action,
                     // 本地兜底警告文案跟服务端策略保持一致，服务不可达时仍能用
                     warnText: policy.warnText
                 }
-            }, selectedUin, isCurrent ? configRevision : editRevision)
+            }, selectedUin, isCurrent ? null : editRevision)
             if (!result.ok) throw new Error(result.message)
             // 处罚策略是服务端全局状态，与账号无关；编辑其他实例时不顺手动它
             if (isCurrent) {
@@ -89,6 +92,18 @@ export default function GuardPage() {
     return (
         <div className="space-y-4 max-w-3xl mx-auto">
             <div className="card animate-fade-in-up p-5">
+                <label className="flex items-center justify-between gap-3 mb-4">
+                    <span>
+                        <span className="text-sm font-semibold text-gray-900 dark:text-white">启用内容守卫</span>
+                        <span className="block text-xs text-gray-400 mt-0.5">关闭后屏蔽词与处罚全部不生效</span>
+                    </span>
+                    <input
+                        type="checkbox"
+                        className="h-4 w-4 accent-[var(--color-primary,#3b82f6)]"
+                        checked={guardEnabled}
+                        onChange={(e) => setGuardEnabled(e.target.checked)}
+                    />
+                </label>
                 <h3 className="text-sm font-semibold text-gray-900 dark:text-white mb-4">屏蔽词与命中动作</h3>
                 <div className="space-y-4">
                     <div>
@@ -122,6 +137,7 @@ export default function GuardPage() {
                 <p className="text-xs text-gray-400 mb-4">
                     窗口内命中达到阈值即禁言，并发送禁言提示；禁言失败降级为警告，不重试。
                     策略保存在服务端（当前来源：{policy.source === 'server' ? '服务端' : '本地兜底'}）。
+                    {!isCurrent && ' 处罚策略只能在当前实例上修改，切换右上账号到本机后再编辑。'}
                 </p>
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                     <NumberField
@@ -130,6 +146,7 @@ export default function GuardPage() {
                         value={policy.windowSeconds}
                         min={60}
                         max={86400}
+                        disabled={!isCurrent}
                         onChange={(v) => patchPolicy({ windowSeconds: v })}
                     />
                     <NumberField
@@ -138,6 +155,7 @@ export default function GuardPage() {
                         value={policy.threshold}
                         min={1}
                         max={20}
+                        disabled={!isCurrent}
                         onChange={(v) => patchPolicy({ threshold: v })}
                     />
                     <NumberField
@@ -146,6 +164,7 @@ export default function GuardPage() {
                         value={policy.muteSeconds}
                         min={60}
                         max={2592000}
+                        disabled={!isCurrent}
                         onChange={(v) => patchPolicy({ muteSeconds: v })}
                     />
                 </div>
@@ -180,8 +199,8 @@ export default function GuardPage() {
     )
 }
 
-function NumberField({ label, desc, value, min, max, onChange }: {
-    label: string; desc: string; value: number; min: number; max: number; onChange: (v: number) => void
+function NumberField({ label, desc, value, min, max, disabled = false, onChange }: {
+    label: string; desc: string; value: number; min: number; max: number; disabled?: boolean; onChange: (v: number) => void
 }) {
     return (
         <div>
@@ -193,6 +212,7 @@ function NumberField({ label, desc, value, min, max, onChange }: {
                 min={min}
                 max={max}
                 value={value}
+                disabled={disabled}
                 onChange={(e) => onChange(Number(e.target.value) || min)}
             />
         </div>
