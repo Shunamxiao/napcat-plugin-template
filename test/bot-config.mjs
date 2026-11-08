@@ -225,13 +225,18 @@ for (const path of ["/config", "/keyword-stats/reset", "/groups/:id", "/guard-po
 assert.equal(routes.has("POST /relay"), true, "relay 应继续使用 NoAuth 专用令牌路由");
 console.log("ok 3a - 管理写路由走 NoAuth，relay 保持专用令牌路由");
 
-// 同源闸门：外站 Origin 的写入 403，本站 Origin 与无 Origin（脚本）放行
+// 写接口闸门：外站 Origin → 403；本站 Origin 但缺自定义头（DNS rebinding 形态）→ 403；
+// 本站 Origin + x-napcat-webui: 1（真实页面）与无 Origin（脚本/curl）→ 放行
 const crossOrigin = await call("POST /keyword-stats/reset", {
     headers: { origin: "http://evil.example", host: "192.168.1.204:6099" },
 });
 assert.equal(crossOrigin.statusCode, 403, "跨站写入应被拒绝");
-const sameOrigin = await call("POST /keyword-stats/reset", {
+const sameOriginNoMarker = await call("POST /keyword-stats/reset", {
     headers: { origin: "http://192.168.1.204:6099", host: "192.168.1.204:6099" },
+});
+assert.equal(sameOriginNoMarker.statusCode, 403, "缺自定义头的浏览器写入应被拒绝（挡住 DNS rebinding）");
+const sameOrigin = await call("POST /keyword-stats/reset", {
+    headers: { origin: "http://192.168.1.204:6099", host: "192.168.1.204:6099", "x-napcat-webui": "1" },
 });
 assert.equal(sameOrigin.statusCode, 200, "同源写入应放行");
 assert.equal(sameOrigin.body.code, 0, "同源写入应执行成功");

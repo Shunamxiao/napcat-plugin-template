@@ -89,21 +89,12 @@ interface PeerInfo {
     isLogin: boolean;
 }
 
-/** 从请求 Host 头解析端口；没有端口（反代/Unix socket）回退 null */
-function portFromHost(req: PluginHttpRequest): number | null {
-    const host = req.headers?.host;
-    const raw = Array.isArray(host) ? host[0] ?? '' : host ?? '';
-    const m = String(raw).match(/:(\d+)$/);
-    if (!m) return null;
-    const port = Number(m[1]);
-    return Number.isInteger(port) && port > 0 && port <= 65535 ? port : null;
-}
-
 /**
  * 实例真实 WebUI 端口（契约 §2.5 端口解析）：读 configPath 上两级的 webui.json 的 port
  * （configPath=<workdir>/config/plugins/<plugin>/config.json，webui.json 在 <workdir>/config/）。
- * 经 SSH 隧道访问时请求 Host 端口是隧道口而非实例口，转发拨号必须拨真实端口；
- * webui.json 缺文件/坏 JSON/无合法 port 时回退 Host 头端口。每次重读，小 JSON 代价可忽略。
+ * 经 SSH 隧道访问时请求 Host 端口是隧道口而非实例口，转发拨号必须拨真实端口。
+ * webui.json 缺文件/坏 JSON/无合法 port 时返回 null（不再回退 Host 头端口：
+ * 那等于让外部请求决定本机拨哪个端口，还会把 accountAccessKey 送到那个端口上）。
  */
 function resolveWebuiPort(ctx: NapCatPluginContext, req: PluginHttpRequest): number | null {
     try {
@@ -111,8 +102,8 @@ function resolveWebuiPort(ctx: NapCatPluginContext, req: PluginHttpRequest): num
         const raw = JSON.parse(fs.readFileSync(file, 'utf-8')) as { port?: unknown };
         const port = Number(raw?.port);
         if (Number.isInteger(port) && port > 0 && port <= 65535) return port;
-    } catch { /* 回退 Host 头端口 */ }
-    return portFromHost(req);
+    } catch { /* 无 webui.json：不给端口，peers 走空列表 */ }
+    return null;
 }
 
 /** 账号插件实例列表缓存（按端口）：/status 每 10 秒被页面轮询，回源别跟着打满 */
@@ -501,6 +492,13 @@ export function registerApiRoutes(ctx: NapCatPluginContext): void {
         const image = typeof body.image === 'string' ? body.image.trim() : '';
         if (!userId || (!text.trim() && !image)) {
             return res.status(400).json({ ok: false, error: 'userId 与 (text 或 image) 不能为空' });
+        }
+        // 号码直接进 send_msg：形状不对一律拒绝，别把任意字符串送给协议层
+        if (!/^\d{5,12}$/.test(userId) || (groupId && !/^\d{5,12}$/.test(groupId))) {
+            return res.status(400).json({ ok: false, error: 'userId / groupId 必须是 5-12 位数字' });
+        }
+        if (text.length > 4000) {
+            return res.status(400).json({ ok: false, error: 'text 超过 4000 字' });
         }
         // 与规则图片共用校验：非法格式/不可用文件在此拒绝，不做"静默只发文字"降级
         const imageSrc = image ? resolveImageSource(image) : null;
