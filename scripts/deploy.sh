@@ -3,8 +3,10 @@
 #
 #   bash scripts/deploy.sh            # 构建 → 覆盖 → 重启 → 校验 build 等于 git HEAD
 #   bash scripts/deploy.sh --check    # 只校验不部署（巡检调用）
+#   SKIP_WEBUI_SMOKE=1 bash scripts/deploy.sh   # 跳过页面自检（没有可用 Chromium 时）
 #
-# 退出码：0 一致/部署成功；3 设备构建与本地 HEAD 不一致；4 取不到设备构建（实例没起/网络不通）
+# 退出码：0 一致/部署成功；3 设备构建与本地 HEAD 不一致；4 取不到设备构建（实例没起/网络不通）；
+#         5 页面自检失败（构建产物渲染不出来或关键控件缺失）
 # 起因（2026-11-08）：设备上的 webui/index.html 停在 11-06，服务端是新代码、页面是旧页面，
 # 保存全 404，没人能看出来；当时产物里没有版本信息，只能靠 md5 猜。
 set -euo pipefail
@@ -78,8 +80,20 @@ if [ -z "$build" ]; then
     exit 4
 fi
 
-echo "== 5/5 校验"
+echo "== 5/6 校验"
 case "$build" in
-    "$SHA"-*) echo "部署完成：设备 build=$build" ;;
+    "$SHA"-*) echo "设备 build 校验通过：$build" ;;
     *)       echo "部署后 build 仍不一致：设备=$build 本地=$SHA（多看几秒，若重启没吃新文件就是解包路径错了）" >&2; exit 3 ;;
 esac
+
+# 6/6 页面自检：拿本地同一份 dist 在无头 Chromium 跑一遍 8 个页面。
+# build 戳只证明文件到了设备，不证明页面能渲染（11-06 那次就是页面旧了没人知道）。
+echo "== 6/6 WebUI 渲染自检"
+if [ "${SKIP_WEBUI_SMOKE:-0}" = "1" ]; then
+    echo "已按 SKIP_WEBUI_SMOKE=1 跳过"
+elif [ ! -e "${CHROME_PATH:-/root/cchrome-web/kernel/ungoogled-chromium-150.0.7871.186-1-x86_64_linux/chrome}" ]; then
+    echo "没找到 Chromium（CHROME_PATH），跳过页面自检" >&2
+else
+    node scripts/webui-smoke.mjs || { echo "页面自检失败：页面渲染/控件断言没过，别当成部署成功" >&2; exit 5; }
+    echo "部署完成：设备 build=$build，页面自检通过"
+fi
