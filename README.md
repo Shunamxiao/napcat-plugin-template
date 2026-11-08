@@ -82,17 +82,24 @@ NapCat 设置页和仪表盘使用同一套 React WebUI（单文件产物，hash
 
 旧页面（基础回复 / 私聊与关键词 / 群规则旧版）已删除，等价功能分别落在上表的回复规则、私聊、群规则页。
 
-管理写接口使用 NapCat WebUI 登录鉴权：
+管理写接口走 `/plugin/napcat-plugin-autoreply/api/` 下的 NoAuth 路由（页面在 `accessControlMode=none`
+时拿不到 NapCat 凭据），闸门是两条：
+
+1. 浏览器请求（带 `Origin`）必须同时带 `x-napcat-webui: 1` 自定义头，且 `Origin` 的主机端口与 `Host` 一致。
+   自定义头会触发 CORS 预检，本服务不答预检，跨站页面（含 DNS rebinding）打不进来。
+2. 不带 `Origin` 的请求（curl / 运维脚本）直接放行——**所以 6099 不要监听到公网/LAN**，只走本机或隧道。
 
 |方法|路径|用途|
 |---|---|---|
-|POST|`/api/Plugin/ext/napcat-plugin-autoreply/server-config`|保存指定账号配置|
-|POST|`/api/Plugin/ext/napcat-plugin-autoreply/config`|保存当前实例配置|
-|POST|`/api/Plugin/ext/napcat-plugin-autoreply/keyword-stats/reset`|重置关键词统计|
-|POST|`/api/Plugin/ext/napcat-plugin-autoreply/groups/:id`|保存群配置|
-|POST|`/api/Plugin/ext/napcat-plugin-autoreply/guard-policy`|保存守卫处罚策略|
+|POST|`/api/server-config`|保存指定账号配置|
+|POST|`/api/config`|保存当前实例配置|
+|POST|`/api/keyword-stats/reset`|重置关键词统计|
+|POST|`/api/groups/:id`|保存群配置|
+|POST|`/api/guard-policy`|保存守卫处罚策略|
+|POST|`/api/snapshots`|创建 / 回滚 / 删除配置快照|
 
-只读 WebUI 接口位于 `/plugin/napcat-plugin-autoreply/api/`。
+只读接口同样在 `/plugin/napcat-plugin-autoreply/api/` 下：`/status`、`/config`、`/peers`、`/server-bots`、
+`/groups`、`/traffic`、`/logs`、`/keyword-stats`、`/observability`、`/snapshots`、`/guard-policy`。
 
 机器回调 `POST /plugin/napcat-plugin-autoreply/api/relay` 不使用 NapCat 登录鉴权。它要求独立的 `x-relay-token` 请求头；`relay.token` 为空、缺失或不匹配时拒绝请求。该接口支持向私聊或群聊发送文本、图片或图文消息。
 

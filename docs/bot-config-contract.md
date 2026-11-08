@@ -92,7 +92,14 @@ CREATE TABLE IF NOT EXISTS bot_config (
 |---|---|---|
 | `GET /api/server-bots` | NoAuth | 代理 `GET /config/bots`，回 `{bots:[{uin,nickname,revision,updatedAt}]}`；失败回 `{bots:[]}`，不许抛异常 |
 | `GET /api/server-config` | NoAuth | 代理 `GET /config/bots/<selfId>`，回 `{config,revision}`（服务端已掩码，原样透传）；失败回 `{error}` + 502 语义 |
-| `POST /api/server-config` | **鉴权路由**（`/api/Plugin/ext/...`，NapCat WebUI token 保护） | body `{uin, config, expectedRevision?}`；插件后端用真实 `kbService.token` 调 `PUT /config/bots/<uin>`，把 `{revision}` / 409（含当前 revision）原样回给页面。**NoAuth 出口禁止开写代理** |
+| `POST /api/server-config` | NoAuth + 写闸门 | body `{uin, config, expectedRevision?}`；插件后端用真实 `kbService.token` 调 `PUT /config/bots/<uin>`，把 `{revision}` / 409（含当前 revision）原样回给页面 |
+
+**2026-11-08 修订**：本条原写「必须走鉴权路由」。实际页面在 `accessControlMode=none` 时没有 NapCat 凭据，
+鉴权路由不可用（59febde 回退）。现行闸门：浏览器请求必须带 `x-napcat-webui: 1` 自定义头且 `Origin`/`Host` 同端口
+（自定义头触发预检，本服务不答预检 → DNS rebinding 与跨站写都被拦）；无 `Origin` 的脚本请求放行，
+因此 6099 必须只对本机/隧道暴露，不得监听公网。
+另：`accountAccessKey` 是宿主本地凭据，上行前替换为掩码，服务端不存真值；当前实例保存不带 `expectedRevision`
+（本地 revision 要等同步才更新，带上会连改两页必吃 409）。
 
 服务端 CORS（§1.4）仍按原样实现，页面链路不依赖它。
 
