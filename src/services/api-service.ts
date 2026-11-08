@@ -16,13 +16,15 @@
  * 读接口按用途使用 NoAuth；写接口同样走 NoAuth —— 页面拿不到 NapCat 凭据（accessControlMode=none 时
  * WebUI 不登录、localStorage 里没有 token），走鉴权路由永远是 {"code":-1,"message":"Unauthorized"}。
  * 写接口统一加 fromSameOrigin 闸门（带 Origin 时必须与 Host 一致）挡跨站 CSRF；能直连 6099 的人本来
- * 就能进 WebUI 改全部配置，这层不额外扩大暴露面。
  */
+
+// 由 vite.config.ts 的 define 注入（<commit>-<构建时间>）；未注入时（如测试直跑源码）显示 dev
+declare const __BUILD_ID__: string | undefined;
+const BUILD_ID = typeof __BUILD_ID__ === 'string' ? __BUILD_ID__ : 'dev';
 
 import type {
     NapCatPluginContext,
-    PluginHttpRequest,
-    PluginHttpResponse
+    PluginHttpRequest
 } from 'napcat-types/napcat-onebot/network/plugin/types';
 import { timingSafeEqual } from 'crypto';
 import fs from 'fs';
@@ -128,7 +130,8 @@ function resolveAccountAccessKey(): string {
  */
 async function fetchPeers(ctx: NapCatPluginContext, req: PluginHttpRequest): Promise<PeerInfo[]> {
     const port = resolveWebuiPort(ctx, req);
-    if (!port) return [];
+    // 端口来自 Host 头：只放行合法整数端口，避免把外部输入拼进 fetch 的 URL
+    if (!port || !Number.isInteger(port) || port < 1 || port > 65535) return [];
     const now = Date.now();
     const cached = peersCache.get(port);
     if (cached && now - cached.at < PEERS_CACHE_MS) return cached.peers;
@@ -210,6 +213,8 @@ export function registerApiRoutes(ctx: NapCatPluginContext): void {
                 webuiPort: resolveWebuiPort(ctx, req),
                 configRevision: botStatus.revision,
                 configSource: botStatus.source,
+                // 部署校验用：与本地 git HEAD 对比即可判断设备上是否跑的最新构建
+                build: BUILD_ID,
             },
         });
     });

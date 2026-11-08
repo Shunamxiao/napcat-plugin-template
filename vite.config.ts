@@ -17,6 +17,21 @@ const nodeModules = [
 // 依赖排除（如有外部依赖需排除，在此添加）
 const external: string[] = [];
 
+// 构建戳：commit + 构建时间。部署后 /plugin/<id>/api/status 的 data.build 必须等于本地 git HEAD——
+// 用来一眼判断设备上跑的是不是最新代码（2026-11-08 前产物无版本，只能靠 md5 猜，页面旧了无人知）。
+const BUILD_ID = (() => {
+    let sha = 'nogit';
+    let dirty = '';
+    try {
+        sha = execSync('git rev-parse --short HEAD', { cwd: __dirname }).toString().trim();
+        // 工作区脏时加 -dirty：否则「设备 build == HEAD」会掩盖未提交改动也被发上去的事实
+        if (execSync('git status --porcelain', { cwd: __dirname }).toString().trim()) dirty = '-dirty';
+    } catch { /* 非 git 环境 */ }
+    const t = new Date();
+    const pad = (n: number) => String(n).padStart(2, '0');
+    return `${sha}${dirty}-${t.getFullYear()}${pad(t.getMonth() + 1)}${pad(t.getDate())}-${pad(t.getHours())}${pad(t.getMinutes())}`;
+})();
+
 /**
  * 递归复制目录
  */
@@ -72,7 +87,8 @@ function copyAssetsPlugin() {
                     });
                     console.log('[copy-assets] (o\'v\'o) WebUI 构建完成');
                 } catch (e: any) {
-                    console.error('[copy-assets] (;_;) WebUI 构建失败:', e.stdout?.toString().slice(-300) || e.message);
+                    // 构建失败必须让整次构建失败：旧的只 console.error 继续跑，会留下「服务端新、页面旧」的半截 dist
+                    throw new Error('[copy-assets] WebUI 构建失败: ' + (e.stdout?.toString().slice(-300) || e.message));
                 }
 
                 // 2. 复制 webui 构建产物
@@ -151,4 +167,7 @@ export default defineConfig({
             targetDir: 'webui',
         },
     })],
+    define: {
+        __BUILD_ID__: JSON.stringify(BUILD_ID),
+    },
 });

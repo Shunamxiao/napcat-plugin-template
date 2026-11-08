@@ -24,6 +24,8 @@ export interface PluginStatus {
     configRevision?: number
     /** 配置来源 */
     configSource?: 'server' | 'local'
+    /** 构建戳（<commit>-<构建时间>），用于判断页面是否旧版 */
+    build?: string
 }
 
 /** 账号管理插件实例（/api/peers 的一条） */

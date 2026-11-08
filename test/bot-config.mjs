@@ -391,6 +391,8 @@ assert.equal(statusData.instanceName, "acc-main", "status.instanceName 应按 ui
 assert.equal(statusData.webuiPort, 6099, "status.webuiPort 应来自 Host 头");
 assert.equal(statusData.configRevision, getBotConfigStatus().revision, "status.configRevision");
 assert.ok(["server", "local"].includes(statusData.configSource), "status.configSource 取值");
+// 部署漂移校验靠这个字段：必须是非空构建戳（<commit>-<时间>），否则 deploy.sh --check 无法判断新旧
+assert.match(String(statusData.build), /^[0-9a-f]{7,}|^nogit|^dev/, "status.build 应带构建戳");
 assert.notEqual(statusData.config.accountAccessKey, "k-123", "accountAccessKey 不得出现在 /api 出口");
 
 const configRes = await call("GET /config", {});

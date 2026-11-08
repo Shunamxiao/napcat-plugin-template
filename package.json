@@ -39,10 +39,10 @@
     "dev:webui": "cd src/webui && pnpm run dev",
     "watch": "vite build --watch",
     "dev": "vite build --watch",
-    "push": "vite build",
-    "deploy": "vite build",
+    "deploy": "bash scripts/deploy.sh",
     "typecheck": "tsc --noEmit",
-    "test": "vite build && for f in test/*.mjs; do node \"$f\" || { echo \"FAILED: $f\"; exit 1; }; done"
+    "test": "vite build && for f in test/*.mjs; do node \"$f\" || { echo \"FAILED: $f\"; exit 1; }; done",
+    "deploy:check": "bash scripts/deploy.sh --check"
   },
   "pnpm": {
     "onlyBuiltDependencies": [

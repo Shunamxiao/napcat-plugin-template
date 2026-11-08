@@ -58,6 +58,7 @@ export default function Header({ title, description, isScrolled }: HeaderProps) 
                         <div>端口：{status?.webuiPort ?? '-'}</div>
                         <div>配置 revision：{status?.configRevision ?? 0}</div>
                         <div>配置来源：{status?.configSource === 'server' ? 'server' : 'local'}</div>
+                        <div>构建：{status?.build ?? '-'}</div>
                     </div>
                 </div>
 
