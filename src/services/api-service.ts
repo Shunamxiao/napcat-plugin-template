@@ -15,7 +15,7 @@
  *
  * 读接口按用途使用 NoAuth；写接口同样走 NoAuth —— 页面拿不到 NapCat 凭据（accessControlMode=none 时
  * WebUI 不登录、localStorage 里没有 token），走鉴权路由永远是 {"code":-1,"message":"Unauthorized"}。
- * 写接口统一加 fromSameOrigin 闸门（带 Origin 时必须与 Host 一致）挡跨站 CSRF；能直连 6099 的人本来
+ * 写接口统一加 fromSameOrigin 闸门（按 Sec-Fetch-Site 判同源）挡跨站 CSRF；能直连 6099 的人本来
  */
 
 // 由 vite.config.ts 的 define 注入（<commit>-<构建时间>）；未注入时（如测试直跑源码）显示 dev
@@ -53,19 +53,26 @@ function isObject(v: unknown): v is Record<string, unknown> {
     return v !== null && typeof v === 'object' && !Array.isArray(v);
 }
 
+/** Host 是 IP 字面量或 localhost（含端口）。DNS rebinding 必须借攻击者域名，域名进不了这条。 */
+const IP_OR_LOCALHOST = /^(localhost|\[[0-9a-f:.]+\]|(?:\d{1,3}\.){3}\d{1,3})(?::\d+)?$/i;
+
 /**
- * 写接口同源闸门：无 Origin（脚本 / curl）放行，浏览器请求必须带自定义头 x-napcat-webui。
+ * 写接口同源闸门：无 Origin（脚本 / curl）放行，浏览器请求要求同源。
  *
- * 为什么不只比 Origin 与 Host：DNS rebinding 时两者都是攻击者域名，比了也白比；
- * 而自定义头会让浏览器先发预检，本服务不答 CORS 预检，攻击页的请求根本到不了这里。
+ * 不拿「Origin 主机 === Host」当主判据：反代改写 Host、端口差异、浏览器缓存旧页面都会误伤，
+ * 而 DNS rebinding 下两者同为攻击者域名，这个比较本来也拦不住。
+ * 改看 Sec-Fetch-Site（浏览器强制设置，页面脚本改不了）：明确 cross-site/same-site 一律拒绝；
+ * 标 same-origin 时再要求 Host 是 IP 字面量或 localhost——rebinding 只能借域名，走不通。
+ * 闸门在服务端，规则改完即生效，浏览器缓存的旧页面也能保存。
  */
-function fromSameOrigin(req: PluginHttpRequest): boolean {
-    const { origin, host } = req.headers ?? {};
+export function fromSameOrigin(req: PluginHttpRequest): boolean {
+    const { origin, host, 'sec-fetch-site': fetchSite } = req.headers ?? {};
     if (typeof origin !== 'string' || origin === '') return true;
-    const marker = req.headers?.['x-napcat-webui'];
-    if ((Array.isArray(marker) ? marker[0] : marker) !== '1') return false;
+    if (fetchSite === 'cross-site' || fetchSite === 'same-site') return false;
+    const hostHeader = (Array.isArray(host) ? host[0] : host) ?? '';
+    if (fetchSite === 'same-origin') return IP_OR_LOCALHOST.test(hostHeader);
     try {
-        return new URL(origin).host === (Array.isArray(host) ? host[0] : host);
+        return new URL(origin).host === hostHeader;
     } catch {
         return false;
     }
@@ -96,7 +103,7 @@ interface PeerInfo {
  * webui.json 缺文件/坏 JSON/无合法 port 时返回 null（不再回退 Host 头端口：
  * 那等于让外部请求决定本机拨哪个端口，还会把 accountAccessKey 送到那个端口上）。
  */
-function resolveWebuiPort(ctx: NapCatPluginContext, req: PluginHttpRequest): number | null {
+function resolveWebuiPort(ctx: NapCatPluginContext, _req: PluginHttpRequest): number | null {
     try {
         const file = path.resolve(path.dirname(ctx.configPath), '..', '..', 'webui.json');
         const raw = JSON.parse(fs.readFileSync(file, 'utf-8')) as { port?: unknown };
@@ -121,17 +128,6 @@ function resolveAccountAccessKey(): string {
     if (fromConfig) return fromConfig;
     return String(process.env.QQBOT_ACCOUNT_ACCESS_KEY ?? '').trim();
 }
-/**
- * 回环 allowlist：主机固定 127.0.0.1、端口必须是整数 1-65535、路径必须以 /plugin/ 开头。
- * 端口来自请求 Host 头，不能直接拼进 URL（否则 ?port=evil 之类的外部输入就进了 fetch）。
- */
-function loopbackPluginUrl(port: number, pathname: string, key: string): string | null {
-    if (!Number.isInteger(port) || port < 1 || port > 65535) return null;
-    if (!pathname.startsWith('/plugin/')) return null;
-    const url = new URL(pathname, 'http://127.0.0.1:' + String(port));
-    if (key) url.searchParams.set('key', key);
-    return url.href;
-}
 
 /**
  * 转发同进程账号管理插件的 /plugin/napcat-plugin-account/api/instances。
@@ -146,12 +142,13 @@ async function fetchPeers(ctx: NapCatPluginContext, req: PluginHttpRequest): Pro
     if (cached && now - cached.at < PEERS_CACHE_MS) return cached.peers;
     const peers: PeerInfo[] = [];
     try {
-        const target = loopbackPluginUrl(port, '/plugin/napcat-plugin-account/api/instances', resolveAccountAccessKey());
-        if (!target) return [];
+        // 只回源本机回环：主机是字面量，端口是校验过的整数，key 走 encodeURIComponent
+        const key = resolveAccountAccessKey();
+        const query = key ? `?key=${encodeURIComponent(key)}` : '';
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), PEERS_TIMEOUT_MS);
         try {
-            const res = await fetch(target, {
+            const res = await fetch(`http://127.0.0.1:${port}/plugin/napcat-plugin-account/api/instances${query}`, {
                 signal: controller.signal,
             });
             if (res.ok) {

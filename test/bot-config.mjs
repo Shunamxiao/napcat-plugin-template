@@ -225,22 +225,23 @@ for (const path of ["/config", "/keyword-stats/reset", "/groups/:id", "/guard-po
 assert.equal(routes.has("POST /relay"), true, "relay 应继续使用 NoAuth 专用令牌路由");
 console.log("ok 3a - 管理写路由走 NoAuth，relay 保持专用令牌路由");
 
-// 写接口闸门：外站 Origin → 403；本站 Origin 但缺自定义头（DNS rebinding 形态）→ 403；
-// 本站 Origin + x-napcat-webui: 1（真实页面）与无 Origin（脚本/curl）→ 放行
+// 写接口闸门（2026-11-09 改）：按 Sec-Fetch-Site 判同源——cross-site/same-site → 403；
+// same-origin 且 Host 是 IP/localhost（含浏览器缓存的旧页面）→ 放行；
+// Host 是域名（DNS rebinding 唯一形态）→ 403；无 Origin（脚本/curl）→ 放行。
 const crossOrigin = await call("POST /keyword-stats/reset", {
-    headers: { origin: "http://evil.example", host: "192.168.1.204:6099" },
+    headers: { origin: "http://evil.example", host: "192.168.1.204:6099", "sec-fetch-site": "cross-site" },
 });
 assert.equal(crossOrigin.statusCode, 403, "跨站写入应被拒绝");
-const sameOriginNoMarker = await call("POST /keyword-stats/reset", {
-    headers: { origin: "http://192.168.1.204:6099", host: "192.168.1.204:6099" },
+const rebinding = await call("POST /keyword-stats/reset", {
+    headers: { origin: "http://evil.example:6099", host: "evil.example:6099", "sec-fetch-site": "same-origin" },
 });
-assert.equal(sameOriginNoMarker.statusCode, 403, "缺自定义头的浏览器写入应被拒绝（挡住 DNS rebinding）");
+assert.equal(rebinding.statusCode, 403, "Host 为域名的同源写入应被拒绝（挡住 DNS rebinding）");
 const sameOrigin = await call("POST /keyword-stats/reset", {
-    headers: { origin: "http://192.168.1.204:6099", host: "192.168.1.204:6099", "x-napcat-webui": "1" },
+    headers: { origin: "http://192.168.1.204:6099", host: "192.168.1.204:6099", "sec-fetch-site": "same-origin" },
 });
-assert.equal(sameOrigin.statusCode, 200, "同源写入应放行");
+assert.equal(sameOrigin.statusCode, 200, "局域网 IP 同源写入应放行");
 assert.equal(sameOrigin.body.code, 0, "同源写入应执行成功");
-console.log("ok 3b - 同源闸门拦跨站、放同源与脚本");
+console.log("ok 3b - 同源闸门拦跨站与 rebinding、放行 IP 直连与脚本");
 
 // 服务端只读代理也要迁移旧私聊兜底，避免跨实例页面保存空值覆盖旧文案
 const currentServerRecord = serverRecord;
@@ -356,9 +357,13 @@ globalThis.fetch = async (url) => {
     throw new TypeError("fetch failed");
 };
 
+// 拨号端口只认 webui.json（2026-11-08 起不再回退 Host 头端口，防外部请求决定本机拨号目标）
+const writeWebuiPort = (port) =>
+    fs.writeFileSync(path.join(dir, "config", "webui.json"), JSON.stringify({ port, token: "x" }));
 // 6a) 未配置 key（config 空 + env 空）：裸转发 → 账号插件拒绝 → {peers:[]}
 delete process.env.QQBOT_ACCOUNT_ACCESS_KEY;
 pluginState.updateConfig({ accountAccessKey: "" });
+writeWebuiPort(6091);
 let peersRes = await call("GET /peers", { headers: { host: "127.0.0.1:6091" } });
 assert.deepEqual(peersRes.body.data.peers, [], "无 key 裸调被拒应回 {peers:[]}");
 assert.ok(!lastInstancesUrl.includes("key="), "未配置时不应带 key");
@@ -366,6 +371,7 @@ console.log("ok 6a - 无 key 转发得空列表");
 
 // 6b) 配置 accountAccessKey → 转发 URL 带 ?key=，转发成功
 pluginState.updateConfig({ accountAccessKey: "k-123" });
+writeWebuiPort(6092);
 peersRes = await call("GET /peers", { headers: { host: "127.0.0.1:6092" } });
 assert.equal(peersRes.body.data.peers.length, 1, "带 key 应转发成功");
 assert.ok(lastInstancesUrl.includes("key=k-123"), "转发 URL 应带 ?key=k-123");
@@ -375,25 +381,28 @@ console.log("ok 6b - 带 key 转发成功");
 pluginState.updateConfig({ accountAccessKey: "" });
 process.env.QQBOT_ACCOUNT_ACCESS_KEY = "env-key-456";
 expectedKey = "env-key-456";
+writeWebuiPort(6093);
 peersRes = await call("GET /peers", { headers: { host: "127.0.0.1:6093" } });
 assert.equal(peersRes.body.data.peers.length, 1, "env 兜底 key 应转发成功");
 assert.ok(lastInstancesUrl.includes("key=env-key-456"), "env 兜底应拼进转发 URL");
 delete process.env.QQBOT_ACCOUNT_ACCESS_KEY;
 console.log("ok 6c - env QQBOT_ACCOUNT_ACCESS_KEY 兜底");
 
-// 6d) 账号插件不在的端口 → {peers:[]}
+// 6d) 没有 webui.json（拿不到真实端口）→ 不拨号 → {peers:[]}
+fs.rmSync(path.join(dir, "config", "webui.json"), { force: true });
 const peersFail = await call("GET /peers", { headers: { host: "127.0.0.1:65535" } });
-assert.deepEqual(peersFail.body.data.peers, [], "端口上没有账号插件应回 {peers:[]}");
+assert.deepEqual(peersFail.body.data.peers, [], "缺 webui.json 应回 {peers:[]}");
 
 // 6e) /api/status 六字段 + accountAccessKey 打码
 pluginState.updateConfig({ accountAccessKey: "k-123" });
 expectedKey = "k-123";
+writeWebuiPort(6099);
 const statusRes = await call("GET /status", { headers: { host: "192.168.1.204:6099" } });
 const statusData = statusRes.body.data;
 assert.equal(statusData.selfId, SELF, "status.selfId");
 assert.equal(statusData.nickname, "测试昵称", "status.nickname 应来自 get_login_info");
 assert.equal(statusData.instanceName, "acc-main", "status.instanceName 应按 uin 匹配账号插件");
-assert.equal(statusData.webuiPort, 6099, "status.webuiPort 应来自 Host 头");
+assert.equal(statusData.webuiPort, 6099, "status.webuiPort 应来自 webui.json");
 assert.equal(statusData.configRevision, getBotConfigStatus().revision, "status.configRevision");
 assert.ok(["server", "local"].includes(statusData.configSource), "status.configSource 取值");
 // 部署漂移校验靠这个字段：必须是非空构建戳（<commit>-<时间>），否则 deploy.sh --check 无法判断新旧

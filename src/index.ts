@@ -64,7 +64,7 @@ export const plugin_init: PluginModule['plugin_init'] = async (ctx) => {
         // 关键词命中统计：路径从数据目录解析，日志打出绝对路径便于排障
         const keywordStatsFile = pluginState.getDataFilePath('keyword-stats.json');
         initKeywordStats(keywordStatsFile);
-        ctx.logger.info('关键词命中统计文件: ' + keywordStatsFile);
+        ctx.logger.info(`关键词命中统计文件: ${keywordStatsFile}`);
         startHandoffCleanup(pluginState.getDataFilePath('handoff.jsonl'));
 
         // 2. 生成配置 Schema（用于 NapCat WebUI 配置面板）
@@ -97,7 +97,7 @@ export const plugin_init: PluginModule['plugin_init'] = async (ctx) => {
             try {
                 plugin_config_ui = buildConfigSchema(ctx, buildSchemaSummary());
             } catch (e) {
-                ctx.logger.debug('刷新配置摘要失败: ' + (e instanceof Error ? e.message : String(e)));
+                ctx.logger.debug(`刷新配置摘要失败: ${e instanceof Error ? e.message : String(e)}`);
             }
         }, 3000);
         if (typeof schemaTimer.unref === 'function') schemaTimer.unref();
@@ -213,9 +213,7 @@ export const plugin_set_config: PluginModule['plugin_set_config'] = async (ctx, 
     cfg.ignoreSendersText = ig.text;
 
     // 群内容守卫：群号/屏蔽词同样保持「文本优先，否则由数组反推」的双向同步
-    if (!cfg.guard) {
-        cfg.guard = pluginState.config.guard;
-    } else {
+    if (cfg.guard) {
         const syncLines = (list: unknown, text: unknown): { list: string[]; text: string } => {
             if (typeof text === 'string') return { list: textToLines(text), text };
             const values = Array.isArray(list) ? list.map(String).map((s) => s.trim()).filter(Boolean) : [];
@@ -226,6 +224,8 @@ export const plugin_set_config: PluginModule['plugin_set_config'] = async (ctx, 
         // 老页面没提交刷新间隔时沿用当前值，避免一次保存把 5 分钟重置成默认值
         const refreshMs = cfg.guard.wordsRefreshMs ?? pluginState.config.guard.wordsRefreshMs;
         cfg.guard = { ...cfg.guard, groupIds: gids.list, groupIdsText: gids.text, words: words.list, wordsText: words.text, wordsRefreshMs: refreshMs };
+    } else {
+        cfg.guard = pluginState.config.guard;
     }
 
     // 群级规则:合法 JSON 文本覆盖结构化规则;非法文本忽略,且不丢失已有规则
@@ -348,7 +348,7 @@ export { buildKeywordReport, reportKeywordStatsOnce, startKeywordReport, stopKey
 export { hourBucket, recordTrafficIncoming, recordTrafficReply, recordTrafficRuleHit, snapshotTraffic, buildTrafficPayload, commitTrafficReport, resetTraffic, reportTrafficOnce, startTrafficReport, stopTrafficReport } from './core/traffic-stats';
 export { buildWelcomeMessage, resolveWelcome, renderWelcomeTemplate } from './handlers/event-handler';
 export { handleMessage, resolveImageSource, sendRelayMessage, clearPrivateMerge, clearPrivateGuide, SERVICE_DOWN_REPLY } from './handlers/message-handler';
-export { registerApiRoutes } from './services/api-service';
+export { registerApiRoutes, fromSameOrigin } from './services/api-service';
 export { fetchGroupConfig } from './services/kb-client';
 export { notifyHandoff, askServiceOutcome, fetchGuardWords } from './services/kb-client';
 export { sanitizeConfig, pluginState, applyConfigPatch } from './core/state';
